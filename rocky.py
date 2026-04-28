@@ -18,18 +18,20 @@ import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import (
-    Qt, QTimer, QPoint, QObject, pyqtSignal, QSize, QRectF,
+    Qt, QTimer, QPoint, QObject, pyqtSignal, QSize, QRectF, QSharedMemory,
 )
 from PyQt6.QtGui import (
     QPixmap, QTransform, QPainter, QColor, QFont, QFontDatabase,
-    QPainterPath, QPen, QBrush, QTextCursor,
+    QPainterPath, QPen, QBrush, QTextCursor, QIcon,
 )
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLineEdit, QPushButton, QMessageBox,
+    QSystemTrayIcon, QMenu,
 )
 
 
@@ -67,6 +69,26 @@ COLOR_TEXT = "#33FF66"
 COLOR_TOOL = "#66CCFF"
 COLOR_SYS = "#669977"
 COLOR_ERR = "#FF6666"
+
+# sandboxed working dir for claude — overrideable via env var
+WORKSPACE = Path(os.environ.get("AGENTROCKY_CWD") or (Path.home() / "agentrocky-workspace"))
+
+# audit log: user sends + tool_use blocks only
+AUDIT_DIR = Path.home() / ".agentrocky"
+AUDIT_LOG = AUDIT_DIR / "audit.log"
+
+
+def audit(kind: str, payload) -> None:
+    try:
+        AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        with AUDIT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "kind": kind,
+                "data": payload,
+            }) + "\n")
+    except Exception:
+        pass  # never let logging break the app
 
 
 def mono_font(size: int = 12) -> QFont:
@@ -140,7 +162,7 @@ class ClaudeSession(QObject):
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=str(Path.home()),
+                cwd=str(WORKSPACE),
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -198,6 +220,11 @@ class ClaudeSession(QObject):
                     name = block.get("name") or "tool"
                     self.line_received.emit(f"→ {name}", "tool")
                     self.tool_use_seen.emit(name)
+                    audit("tool_use", {
+                        "name": name,
+                        "input": block.get("input"),
+                        "id": block.get("id"),
+                    })
             return
         if t == "result":
             self.task_complete.emit()
@@ -211,12 +238,33 @@ class ClaudeSession(QObject):
             "message": {"role": "user", "content": prompt},
         }
         data = json.dumps(envelope) + "\n"
+        audit("user_send", {"content": prompt})
         with self._stdin_lock:
             try:
                 self.proc.stdin.write(data)
                 self.proc.stdin.flush()
             except Exception as e:
                 self.line_received.emit(f"send failed: {e}", "error")
+
+    def stop(self) -> None:
+        """Cleanly terminate the claude subprocess. Safe to call multiple times."""
+        proc = self.proc
+        if not proc:
+            return
+        self.proc = None
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 # -- speech bubble ------------------------------------------------------------
@@ -441,8 +489,9 @@ class Rocky(QWidget):
         session.line_received.connect(self.chat.append_line)
         session.task_complete.connect(self._on_task_complete)
         session.tool_use_seen.connect(self._on_tool_use)
-        session.ready.connect(lambda: self.chat.append_line(
-            "[claude ready]", "system"))
+        # readiness flag (no chat noise) — tooltip + first-send gate live elsewhere
+        self._claude_ready = False
+        session.ready.connect(self._on_claude_ready)
 
         # timers
         self.move_timer = QTimer(self)
@@ -547,6 +596,19 @@ class Rocky(QWidget):
         top = int(self.pos_y) + 4
         self.bubble.show_text(text, cx, top)
 
+    # -- tray helpers --
+    def show_chat(self) -> None:
+        if not self.is_chat_open:
+            self._toggle_chat()
+        else:
+            self.chat.raise_()
+            self.chat.activateWindow()
+
+    def _on_claude_ready(self) -> None:
+        self._claude_ready = True
+        if hasattr(self, "_tray") and self._tray is not None:
+            self._tray.setToolTip("agentrocky — ready")
+
     # -- session events --
     def _on_task_complete(self) -> None:
         self._start_jazz()
@@ -594,9 +656,50 @@ class Rocky(QWidget):
 
 # -- main ---------------------------------------------------------------------
 
+def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
+    """Tray icon with right-click menu. Returns None if unsupported."""
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        return None
+    icon = QIcon(str(SPRITE_DIR / SPRITE_FILES["stand"]))
+    tray = QSystemTrayIcon(icon, app)
+    tray.setToolTip("agentrocky — starting…")
+    menu = QMenu()
+    menu.addAction("Show Chat", rocky.show_chat)
+    menu.addAction("Show Rocky", rocky.show)
+    menu.addAction("Hide Rocky", rocky.hide)
+    menu.addSeparator()
+    menu.addAction("Open Workspace", lambda: os.startfile(str(WORKSPACE)))
+    menu.addAction("Open Audit Log", lambda: os.startfile(str(AUDIT_LOG))
+                   if AUDIT_LOG.exists() else None)
+    menu.addSeparator()
+    quit_action = menu.addAction("Quit")
+    quit_action.triggered.connect(app.quit)
+    tray.setContextMenu(menu)
+    # left-click toggles chat
+    tray.activated.connect(lambda reason: (
+        rocky.show_chat() if reason == QSystemTrayIcon.ActivationReason.Trigger else None
+    ))
+    tray.show()
+    return tray
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    # single-instance lock (silent exit if already running)
+    shm = QSharedMemory("agentrocky-singleton-v1")
+    if not shm.create(1):
+        return 0
+    app._agentrocky_shm = shm  # keep reference alive
+
+    # ensure sandbox workspace exists before launching claude
+    try:
+        WORKSPACE.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        QMessageBox.critical(None, "agentrocky",
+                             f"Cannot create workspace at {WORKSPACE}:\n{e}")
+        return 1
 
     missing = [f for f in SPRITE_FILES.values() if not (SPRITE_DIR / f).exists()]
     if missing:
@@ -611,8 +714,15 @@ def main() -> int:
     session = ClaudeSession()
     rocky = Rocky(session)
     rocky.show()
-    session.start()
 
+    tray = _build_tray(app, rocky)
+    rocky._tray = tray  # let rocky update tooltip on ready
+    app._agentrocky_tray = tray  # prevent GC
+
+    # clean shutdown of claude subprocess
+    app.aboutToQuit.connect(session.stop)
+
+    session.start()
     return app.exec()
 
 
