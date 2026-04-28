@@ -26,7 +26,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPixmap, QTransform, QPainter, QColor, QFont, QFontDatabase,
-    QPainterPath, QPen, QBrush, QTextCursor, QIcon,
+    QPainterPath, QPen, QBrush, QTextCursor, QIcon, QGuiApplication, QCursor,
 )
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
@@ -115,6 +115,7 @@ class ClaudeSession(QObject):
     task_complete = pyqtSignal()
     tool_use_seen = pyqtSignal(str)        # tool name
     ready = pyqtSignal()
+    session_died = pyqtSignal()            # stdout EOF / process exit
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -190,7 +191,9 @@ class ClaudeSession(QObject):
                 self.line_received.emit(line, "system")
                 continue
             self._dispatch(msg)
-        self.line_received.emit("[claude process exited]", "system")
+        # stdout closed → session ended (intentionally or otherwise)
+        if self.proc is not None:
+            self.session_died.emit()
 
     def _read_stderr(self) -> None:
         assert self.proc and self.proc.stderr
@@ -230,8 +233,16 @@ class ClaudeSession(QObject):
             self.task_complete.emit()
             return
 
+    def is_alive(self) -> bool:
+        return bool(self.proc and self.proc.poll() is None and self.proc.stdin)
+
     def send(self, prompt: str) -> None:
-        if not self.proc or not self.proc.stdin:
+        if not self.is_alive():
+            self.line_received.emit(
+                "session is not running — use Restart Claude from the tray menu.",
+                "error",
+            )
+            self.session_died.emit()
             return
         envelope = {
             "type": "user",
@@ -245,6 +256,7 @@ class ClaudeSession(QObject):
                 self.proc.stdin.flush()
             except Exception as e:
                 self.line_received.emit(f"send failed: {e}", "error")
+                self.session_died.emit()
 
     def stop(self) -> None:
         """Cleanly terminate the claude subprocess. Safe to call multiple times."""
@@ -376,6 +388,7 @@ class ChatWindow(QWidget):
         self.resize(420, 520)
         self.setStyleSheet(f"background:{COLOR_BG};")
         self._opted_in = False  # one-time --dangerously-skip-permissions ack
+        self._is_running = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -389,7 +402,18 @@ class ChatWindow(QWidget):
             f"QTextEdit{{background:{COLOR_BG};color:{COLOR_TEXT};border:none;"
             f"padding:8px;}}"
         )
+        # cap scrollback so long sessions don't bloat memory
+        self.output.document().setMaximumBlockCount(5000)
         root.addWidget(self.output, 1)
+
+        # streaming cursor: visible only while a turn is in flight
+        self.cursor_label = QLabel("▋")
+        self.cursor_label.setFont(mono_font(11))
+        self.cursor_label.setStyleSheet(
+            f"color:{COLOR_TEXT};background:{COLOR_BG};padding:0 10px 4px 10px;"
+        )
+        self.cursor_label.hide()
+        root.addWidget(self.cursor_label)
 
         bar = QWidget()
         bar.setStyleSheet("background:#000;")
@@ -407,6 +431,26 @@ class ChatWindow(QWidget):
         self.input.returnPressed.connect(self._on_submit)
         bar_lay.addWidget(self.input, 1)
         root.addWidget(bar)
+
+        # blink the cursor while running
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._blink)
+        self._blink_state = True
+
+    def set_running(self, running: bool) -> None:
+        self._is_running = running
+        if running:
+            self.cursor_label.show()
+            self._blink_state = True
+            self.cursor_label.setText("▋")
+            self._blink_timer.start(500)
+        else:
+            self._blink_timer.stop()
+            self.cursor_label.hide()
+
+    def _blink(self) -> None:
+        self._blink_state = not self._blink_state
+        self.cursor_label.setText("▋" if self._blink_state else " ")
 
     def append_line(self, text: str, kind: str) -> None:
         color = {
@@ -426,20 +470,30 @@ class ChatWindow(QWidget):
         if not self._opted_in:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle("Heads up")
-            box.setText(
-                "Rocky runs claude with --dangerously-skip-permissions.\n\n"
-                "Claude will execute tools (file edits, shell commands, etc.) "
-                "WITHOUT asking each time. Only proceed if you understand the risk."
+            box.setWindowTitle("agentrocky — read this first")
+            box.setText("Claude will run with --dangerously-skip-permissions.")
+            box.setInformativeText(
+                f"Working directory: {WORKSPACE}\n\n"
+                "Without permission prompts, Claude can:\n"
+                "  • read and write any file under that directory\n"
+                "  • run arbitrary shell commands (including delete / network)\n"
+                "  • call MCP tools and external services\n"
+                "  • send data to api.anthropic.com\n\n"
+                "Conversations and tool inputs are also written to:\n"
+                f"  {AUDIT_LOG}\n\n"
+                "Only continue if you understand and accept this. The dialog "
+                "won't show again this session."
             )
             box.setStandardButtons(
                 QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
             )
+            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
             if box.exec() != QMessageBox.StandardButton.Ok:
                 return
             self._opted_in = True
         self.input.clear()
         self.append_line(f"❯ {text}", "system")
+        self.set_running(True)
         self.submitted.emit(text)
 
 
@@ -465,11 +519,16 @@ class Rocky(QWidget):
         self.label.resize(SPRITE_SIZE, SPRITE_SIZE)
         self.label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # state
-        scr = QApplication.primaryScreen().availableGeometry()
+        # state — pick the screen under the cursor (falls back to primary)
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        self._qscreen = screen
+        scr = screen.availableGeometry()
         self._screen = scr
         self.pos_x = float(scr.left() + scr.width() // 3)
         self.pos_y = scr.bottom() - TASKBAR_OFFSET - SPRITE_SIZE
+        # recompute on screen geometry change (DPI / resolution / dock changes)
+        screen.geometryChanged.connect(self._on_screen_changed)
+        screen.availableGeometryChanged.connect(self._on_screen_changed)
         self.direction = -1     # -1 left, +1 right (sprites face left by default)
         self.walk_frame = 0
         self.jazz_frame = 0
@@ -489,6 +548,7 @@ class Rocky(QWidget):
         session.line_received.connect(self.chat.append_line)
         session.task_complete.connect(self._on_task_complete)
         session.tool_use_seen.connect(self._on_tool_use)
+        session.session_died.connect(self._on_session_died)
         # readiness flag (no chat noise) — tooltip + first-send gate live elsewhere
         self._claude_ready = False
         session.ready.connect(self._on_claude_ready)
@@ -611,6 +671,7 @@ class Rocky(QWidget):
 
     # -- session events --
     def _on_task_complete(self) -> None:
+        self.chat.set_running(False)
         self._start_jazz()
         self._show_bubble(random.choice(DONE_BUBBLES))
 
@@ -619,6 +680,34 @@ class Rocky(QWidget):
 
     def _on_user_send(self, text: str) -> None:
         self.session.send(text)
+
+    def _on_session_died(self) -> None:
+        self.chat.set_running(False)
+        self._claude_ready = False
+        if hasattr(self, "_tray") and self._tray is not None:
+            self._tray.setToolTip("agentrocky — session ended")
+        self.chat.append_line(
+            "[claude session ended — Restart Claude from the tray menu]",
+            "error",
+        )
+
+    def restart_claude(self) -> None:
+        """Tear down and respawn the claude subprocess."""
+        self.chat.append_line("[restarting claude…]", "system")
+        self.session.stop()
+        self._claude_ready = False
+        if hasattr(self, "_tray") and self._tray is not None:
+            self._tray.setToolTip("agentrocky — starting…")
+        self.session.start()
+
+    # -- multi-monitor / DPI changes --
+    def _on_screen_changed(self, *_args) -> None:
+        scr = self._qscreen.availableGeometry()
+        self._screen = scr
+        # clamp into the new geometry
+        self.pos_x = max(scr.left(), min(self.pos_x, scr.right() - SPRITE_SIZE))
+        self.pos_y = scr.bottom() - TASKBAR_OFFSET - SPRITE_SIZE
+        self.move(int(self.pos_x), int(self.pos_y))
 
     # -- mouse: click rocky toggles chat (drag suppression on tiny mouse moves) --
     def mousePressEvent(self, ev) -> None:  # noqa: N802
@@ -668,6 +757,7 @@ def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
     menu.addAction("Show Rocky", rocky.show)
     menu.addAction("Hide Rocky", rocky.hide)
     menu.addSeparator()
+    menu.addAction("Restart Claude", rocky.restart_claude)
     menu.addAction("Open Workspace", lambda: os.startfile(str(WORKSPACE)))
     menu.addAction("Open Audit Log", lambda: os.startfile(str(AUDIT_LOG))
                    if AUDIT_LOG.exists() else None)
