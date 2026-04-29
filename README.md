@@ -149,6 +149,14 @@ See [`improvement_plan.md`](improvement_plan.md) for the full list. P0 (next):
   <https://github.com/itmesneha/agentrocky>
 - **Windows port:** this repo. Built with PyQt6.
 
+### Voice (Windows only)
+
+Lifecycle voice clips are vendored from
+[rocky-peon-ping](https://github.com/Akshat1903/rocky-peon-ping) by
+[@Akshat1903](https://github.com/Akshat1903), licensed CC-BY-NC-4.0. The
+voice references Rocky from Andy Weir's *Project Hail Mary* — **non-commercial
+use only**. Toggle on/off via tray menu or right-click rocky → **Voice**.
+
 If you like the project, ⭐ the **original repo** first:
 <https://github.com/itmesneha/agentrocky>.
 

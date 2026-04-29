@@ -1,0 +1,297 @@
+{
+  "name": "rocky-voicepack-v1",
+  "source": "https://github.com/Akshat1903/rocky-peon-ping",
+  "license": "CC-BY-NC-4.0",
+  "clips": [
+    {
+      "category": "session_start",
+      "file": "ReadyWork.wav",
+      "label": "Rocky here, ready work"
+    },
+    {
+      "category": "session_start",
+      "file": "HelloFriend.wav",
+      "label": "Hello friend, fist bump"
+    },
+    {
+      "category": "session_start",
+      "file": "GoodMorning.wav",
+      "label": "Good morning"
+    },
+    {
+      "category": "session_start",
+      "file": "AwakeAwake.wav",
+      "label": "Rocky awake, what we build"
+    },
+    {
+      "category": "session_start",
+      "file": "NewDay.wav",
+      "label": "New day, new code"
+    },
+    {
+      "category": "session_start",
+      "file": "RockyArrive.wav",
+      "label": "Rocky arrive"
+    },
+    {
+      "category": "session_start",
+      "file": "BrainHere.wav",
+      "label": "Rocky bring brain"
+    },
+    {
+      "category": "session_start",
+      "file": "ScienceTime.wav",
+      "label": "Science time"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "Understand.wav",
+      "label": "Understand"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "GotItFistBump.wav",
+      "label": "Rocky got it, fist bump"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "YesYesYes.wav",
+      "label": "Yes yes yes, Rocky do"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "GoodIdea.wav",
+      "label": "Good idea"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "RockyListen.wav",
+      "label": "Rocky listen, work now"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "OkayOnIt.wav",
+      "label": "Okay, on it"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "KnowWhatDo.wav",
+      "label": "Rocky know what to do"
+    },
+    {
+      "category": "task_acknowledge",
+      "file": "FistBumpUnderstand.wav",
+      "label": "Fist bump, Rocky understand"
+    },
+    {
+      "category": "task_complete",
+      "file": "DoneFistBump.wav",
+      "label": "Done, fist bump"
+    },
+    {
+      "category": "task_complete",
+      "file": "HappyFinish.wav",
+      "label": "Finish, Rocky happy"
+    },
+    {
+      "category": "task_complete",
+      "file": "GoodEngineer.wav",
+      "label": "Rocky good engineer"
+    },
+    {
+      "category": "task_complete",
+      "file": "TaskDone.wav",
+      "label": "Task done, good"
+    },
+    {
+      "category": "task_complete",
+      "file": "FistBumpFriend.wav",
+      "label": "Fist bump friend"
+    },
+    {
+      "category": "task_complete",
+      "file": "RockyProud.wav",
+      "label": "Rocky proud"
+    },
+    {
+      "category": "task_complete",
+      "file": "AmazeWork.wav",
+      "label": "Amaze, Rocky make it work"
+    },
+    {
+      "category": "task_complete",
+      "file": "CodeGood.wav",
+      "label": "Code good, Rocky solve"
+    },
+    {
+      "category": "task_complete",
+      "file": "EasyEasy.wav",
+      "label": "Easy easy, fist bump"
+    },
+    {
+      "category": "task_error",
+      "file": "BadBadBad.wav",
+      "label": "Bad, Rocky sorry"
+    },
+    {
+      "category": "task_error",
+      "file": "NoWork.wav",
+      "label": "Something break"
+    },
+    {
+      "category": "task_error",
+      "file": "Confuse.wav",
+      "label": "Rocky confuse"
+    },
+    {
+      "category": "task_error",
+      "file": "ProblemNoUnderstand.wav",
+      "label": "Rocky no understand"
+    },
+    {
+      "category": "task_error",
+      "file": "SadSadSad.wav",
+      "label": "Sad, Rocky try again"
+    },
+    {
+      "category": "task_error",
+      "file": "RockyFail.wav",
+      "label": "Rocky fail, you help"
+    },
+    {
+      "category": "task_error",
+      "file": "ErrorNoLike.wav",
+      "label": "Error, Rocky no like"
+    },
+    {
+      "category": "task_error",
+      "file": "TaskHard.wav",
+      "label": "Task hard, Rocky stuck"
+    },
+    {
+      "category": "input_required",
+      "file": "NeedYou.wav",
+      "label": "Rocky need you"
+    },
+    {
+      "category": "input_required",
+      "file": "WhatDo.wav",
+      "label": "What do, Rocky wait"
+    },
+    {
+      "category": "input_required",
+      "file": "YouThere.wav",
+      "label": "You there"
+    },
+    {
+      "category": "input_required",
+      "file": "RockyStuck.wav",
+      "label": "Rocky stuck, need human"
+    },
+    {
+      "category": "input_required",
+      "file": "HelpWait.wav",
+      "label": "Help, Rocky wait"
+    },
+    {
+      "category": "input_required",
+      "file": "QuestionForFriend.wav",
+      "label": "Question for friend"
+    },
+    {
+      "category": "input_required",
+      "file": "NeedAnswer.wav",
+      "label": "Rocky need answer"
+    },
+    {
+      "category": "input_required",
+      "file": "ComeBack.wav",
+      "label": "Come back, Rocky bored"
+    },
+    {
+      "category": "user_spam",
+      "file": "TooManyClick.wav",
+      "label": "Too many click"
+    },
+    {
+      "category": "user_spam",
+      "file": "RockyBusy.wav",
+      "label": "Rocky busy, you brave brave"
+    },
+    {
+      "category": "user_spam",
+      "file": "StopStopStop.wav",
+      "label": "Stop, Rocky working"
+    },
+    {
+      "category": "user_spam",
+      "file": "HumanBrave.wav",
+      "label": "Human brave brave, patience"
+    },
+    {
+      "category": "user_spam",
+      "file": "WhyYouDoThis.wav",
+      "label": "Why you do this, Rocky sad"
+    },
+    {
+      "category": "user_spam",
+      "file": "VeryBrave.wav",
+      "label": "You brave brave"
+    },
+    {
+      "category": "user_spam",
+      "file": "NotFastButton.wav",
+      "label": "Rocky not fast button"
+    },
+    {
+      "category": "user_spam",
+      "file": "HaImpatient.wav",
+      "label": "Human impatient, brave brave"
+    },
+    {
+      "category": "user_spam",
+      "file": "CountClick.wav",
+      "label": "Rocky count click"
+    },
+    {
+      "category": "resource_limit",
+      "file": "BrainFull.wav",
+      "label": "Rocky brain full"
+    },
+    {
+      "category": "resource_limit",
+      "file": "TooMuchWork.wav",
+      "label": "Too much work, overload"
+    },
+    {
+      "category": "resource_limit",
+      "file": "NeedRest.wav",
+      "label": "Rocky need rest"
+    },
+    {
+      "category": "resource_limit",
+      "file": "LimitReach.wav",
+      "label": "Limit reach, Rocky stop"
+    },
+    {
+      "category": "resource_limit",
+      "file": "NoMoreFuel.wav",
+      "label": "No more fuel, Rocky tired"
+    },
+    {
+      "category": "resource_limit",
+      "file": "TokenGone.wav",
+      "label": "Token gone, Rocky wait"
+    },
+    {
+      "category": "resource_limit",
+      "file": "BrainTired.wav",
+      "label": "Brain tired, too many think"
+    },
+    {
+      "category": "resource_limit",
+      "file": "OverloadBreak.wav",
+      "label": "Overload, Rocky need break"
+    }
+  ]
+}

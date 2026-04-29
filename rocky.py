@@ -18,11 +18,19 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
+if sys.platform == "win32":
+    import winsound
+else:
+    winsound = None  # type: ignore
+
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QObject, pyqtSignal, QSize, QRectF, QSharedMemory,
+    QElapsedTimer,
 )
 from PyQt6.QtGui import (
     QPixmap, QTransform, QPainter, QColor, QFont, QFontDatabase,
@@ -38,6 +46,7 @@ from PyQt6.QtWidgets import (
 # -- constants ----------------------------------------------------------------
 
 SPRITE_DIR = Path(__file__).parent / "sprites"
+SOUND_DIR = Path(__file__).parent / "sounds"
 SPRITE_FILES = {
     "stand": "stand.png",
     "walk1": "walkleft1.png",
@@ -76,6 +85,32 @@ WORKSPACE = Path(os.environ.get("AGENTROCKY_CWD") or (Path.home() / "agentrocky-
 # audit log: user sends + tool_use blocks only
 AUDIT_DIR = Path.home() / ".agentrocky"
 AUDIT_LOG = AUDIT_DIR / "audit.log"
+CRASH_LOG = AUDIT_DIR / "log.txt"
+
+
+def _install_excepthook() -> None:
+    """Route unhandled exceptions to ~/.agentrocky/log.txt + a dialog."""
+    import traceback
+
+    def hook(etype, value, tb):
+        try:
+            AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+            with CRASH_LOG.open("a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.now(timezone.utc).isoformat()} ---\n")
+                traceback.print_exception(etype, value, tb, file=f)
+        except Exception:
+            pass
+        try:
+            QMessageBox.critical(
+                None,
+                "agentrocky crashed",
+                f"Unhandled error: {etype.__name__}: {value}\n\nLog: {CRASH_LOG}",
+            )
+        except Exception:
+            pass
+        sys.__excepthook__(etype, value, tb)
+
+    sys.excepthook = hook
 
 
 def audit(kind: str, payload) -> None:
@@ -103,6 +138,111 @@ def mono_font(size: int = 12) -> QFont:
     return f
 
 
+# -- voice pack ---------------------------------------------------------------
+
+# Higher number = more important. Higher pri preempts lower; same pri within
+# VOICE_MIN_GAP_MS of an in-flight clip is dropped (prevents stutter).
+VOICE_PRIORITY = {
+    "session_start": 1,
+    "task_acknowledge": 2,
+    "task_complete": 3,
+    "task_error": 4,
+}
+VOICE_MIN_GAP_MS = 600
+
+
+def _wav_duration_ms(path: Path) -> int:
+    try:
+        with wave.open(str(path), "rb") as w:
+            frames = w.getnframes()
+            rate = w.getframerate() or 1
+            return int(round(frames / rate * 1000))
+    except Exception:
+        return 1500  # safe default if parse fails
+
+
+def _now_ms() -> int:
+    return time.monotonic_ns() // 1_000_000
+
+
+class VoicePack:
+    """Lifecycle SFX. Random clip per category. winsound playback (async).
+
+    Manifest schema: {"clips": [{"category": str, "file": str, ...}, ...]}.
+    Scheduler avoids clobber: tracks an in-flight clip's end-time and priority,
+    drops/preempts subsequent plays based on category priority + cool-down.
+    """
+
+    def __init__(self, base: Path) -> None:
+        self.base = base
+        self.enabled = sys.platform == "win32" and winsound is not None
+        self.by_category: dict[str, list[Path]] = {}
+        self.durations: dict[Path, int] = {}
+        self._busy_until_ms: int = 0
+        self._current_priority: int = 0
+        self._load_manifest()
+
+    def _load_manifest(self) -> None:
+        m = self.base / "manifest.json"
+        if not m.exists():
+            self.enabled = False
+            return
+        try:
+            data = json.loads(m.read_text("utf-8"))
+        except Exception:
+            self.enabled = False
+            return
+        for entry in data.get("clips", []):
+            cat = entry.get("category")
+            f = self.base / entry.get("file", "")
+            if cat and f.exists():
+                self.by_category.setdefault(cat, []).append(f)
+                self.durations[f] = _wav_duration_ms(f)
+        if not self.by_category:
+            self.enabled = False
+
+    def play(self, category: str) -> None:
+        if not self.enabled:
+            return
+        clips = self.by_category.get(category)
+        if not clips:
+            return
+        pri = VOICE_PRIORITY.get(category, 0)
+        now = _now_ms()
+        if now < self._busy_until_ms:
+            remaining = self._busy_until_ms - now
+            if pri < self._current_priority:
+                return  # don't interrupt more important clip
+            if pri == self._current_priority and remaining > VOICE_MIN_GAP_MS:
+                return  # same tier, too close — drop to avoid stutter
+            # else: higher priority, or same-tier with clip nearly done → preempt
+        clip = random.choice(clips)
+        try:
+            winsound.PlaySound(str(clip),
+                               winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception:
+            return  # never let audio break the app
+        self._busy_until_ms = now + self.durations.get(clip, 1500)
+        self._current_priority = pri
+
+    def stop(self) -> None:
+        self._busy_until_ms = 0
+        self._current_priority = 0
+        if sys.platform == "win32" and winsound is not None:
+            try:
+                winsound.PlaySound(None, 0)
+            except Exception:
+                pass
+
+    def toggle(self) -> bool:
+        if not self.by_category:
+            return False  # nothing to enable
+        self.enabled = not self.enabled
+        if not self.enabled:
+            self.stop()
+        return self.enabled
+
+
 # -- claude subprocess --------------------------------------------------------
 
 class ClaudeSession(QObject):
@@ -116,11 +256,15 @@ class ClaudeSession(QObject):
     tool_use_seen = pyqtSignal(str)        # tool name
     ready = pyqtSignal()
     session_died = pyqtSignal()            # stdout EOF / process exit
+    usage_updated = pyqtSignal(dict)       # cumulative usage from result.usage
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.proc: subprocess.Popen | None = None
         self._stdin_lock = threading.Lock()
+        self._usage_total = {"input_tokens": 0, "output_tokens": 0,
+                             "cache_read_input_tokens": 0,
+                             "cache_creation_input_tokens": 0}
 
     @staticmethod
     def _locate_cli() -> list[str] | None:
@@ -230,6 +374,12 @@ class ClaudeSession(QObject):
                     })
             return
         if t == "result":
+            usage = msg.get("usage") or {}
+            for k in self._usage_total:
+                v = usage.get(k)
+                if isinstance(v, int):
+                    self._usage_total[k] += v
+            self.usage_updated.emit(dict(self._usage_total))
             self.task_complete.emit()
             return
 
@@ -281,6 +431,10 @@ class ClaudeSession(QObject):
 
 # -- speech bubble ------------------------------------------------------------
 
+BUBBLE_MAX_WIDTH = 280
+BUBBLE_DEBOUNCE_MS = 400
+
+
 class SpeechBubble(QWidget):
     def __init__(self) -> None:
         super().__init__(
@@ -293,16 +447,29 @@ class SpeechBubble(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self._text = ""
+        self._last_shown_ms = 0
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
 
     def show_text(self, text: str, anchor_center_x: int, anchor_top_y: int) -> None:
+        # debounce: drop if a bubble appeared too recently (prevents flicker on tool spam)
+        if not hasattr(self, "_etimer"):
+            self._etimer = QElapsedTimer()
+            self._etimer.start()
+        if self.isVisible() and self._etimer.elapsed() - self._last_shown_ms < BUBBLE_DEBOUNCE_MS:
+            return
+        self._last_shown_ms = self._etimer.elapsed()
+
         self._text = text
-        # measure
         fm = self.fontMetrics()
-        w = fm.horizontalAdvance(text) + 24
-        h = fm.height() + 18 + 8  # padding + tail
+        max_inner = BUBBLE_MAX_WIDTH - 24
+        # measure with word wrap inside the max width
+        rect = fm.boundingRect(0, 0, max_inner, 10_000,
+                               int(Qt.TextFlag.TextWordWrap)
+                               | int(Qt.AlignmentFlag.AlignCenter), text)
+        w = max(rect.width() + 24, 60)
+        h = rect.height() + 18 + 8  # padding + tail
         self.resize(w, h)
         self.move(int(anchor_center_x - w / 2), int(anchor_top_y - h))
         self.update()
@@ -317,7 +484,6 @@ class SpeechBubble(QWidget):
         body = QRectF(0, 0, w, h - 8)
         path = QPainterPath()
         path.addRoundedRect(body, 8, 8)
-        # tail
         cx = w / 2
         tail = QPainterPath()
         tail.moveTo(cx - 6, h - 8)
@@ -330,7 +496,11 @@ class SpeechBubble(QWidget):
         p.drawPath(path)
         p.setPen(QColor(20, 20, 20))
         p.setFont(self.font())
-        p.drawText(body, Qt.AlignmentFlag.AlignCenter, self._text)
+        # word-wrap text inside body (with small horizontal padding)
+        body_padded = body.adjusted(8, 4, -8, -4)
+        p.drawText(body_padded,
+                   int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignCenter),
+                   self._text)
 
 
 # -- chat window --------------------------------------------------------------
@@ -351,6 +521,11 @@ class ChatHeader(QWidget):
         title.setStyleSheet("color:#33FF66;")
         lay.addWidget(title)
         lay.addStretch(1)
+        # token counter — updated via ChatWindow.set_usage
+        self.tokens_label = QLabel("")
+        self.tokens_label.setFont(mono_font(10))
+        self.tokens_label.setStyleSheet(f"color:{COLOR_SYS};")
+        lay.addWidget(self.tokens_label)
         close_btn = QPushButton("×")
         close_btn.setFixedSize(22, 22)
         close_btn.setFont(mono_font(14))
@@ -373,6 +548,41 @@ class ChatHeader(QWidget):
 
     def mouseReleaseEvent(self, _ev) -> None:  # noqa: N802
         self._drag_offset = None
+
+
+class HistoryLineEdit(QLineEdit):
+    """QLineEdit with shell-style Up/Down history."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history: list[str] = []
+        self._idx: int | None = None  # None = editing fresh line
+        self._draft = ""
+
+    def push(self, text: str) -> None:
+        if text and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+        self._idx = None
+        self._draft = ""
+
+    def keyPressEvent(self, ev) -> None:  # noqa: N802
+        if ev.key() == Qt.Key.Key_Up and self._history:
+            if self._idx is None:
+                self._draft = self.text()
+                self._idx = len(self._history) - 1
+            elif self._idx > 0:
+                self._idx -= 1
+            self.setText(self._history[self._idx])
+            return
+        if ev.key() == Qt.Key.Key_Down and self._idx is not None:
+            if self._idx < len(self._history) - 1:
+                self._idx += 1
+                self.setText(self._history[self._idx])
+            else:
+                self._idx = None
+                self.setText(self._draft)
+            return
+        super().keyPressEvent(ev)
 
 
 class ChatWindow(QWidget):
@@ -423,7 +633,7 @@ class ChatWindow(QWidget):
         prompt.setFont(mono_font(12))
         prompt.setStyleSheet(f"color:{COLOR_TEXT};")
         bar_lay.addWidget(prompt)
-        self.input = QLineEdit()
+        self.input = HistoryLineEdit()
         self.input.setFont(mono_font(11))
         self.input.setStyleSheet(
             f"QLineEdit{{background:transparent;color:{COLOR_TEXT};border:none;}}"
@@ -451,6 +661,24 @@ class ChatWindow(QWidget):
     def _blink(self) -> None:
         self._blink_state = not self._blink_state
         self.cursor_label.setText("▋" if self._blink_state else " ")
+
+    def set_usage(self, usage: dict) -> None:
+        header = self.findChild(ChatHeader)
+        if header is None:
+            return
+        total_in = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) \
+                   + usage.get("cache_creation_input_tokens", 0)
+        total_out = usage.get("output_tokens", 0)
+        header.tokens_label.setText(f"in {total_in:,}  out {total_out:,}")
+
+    def keyPressEvent(self, ev) -> None:  # noqa: N802
+        if ev.key() == Qt.Key.Key_Escape:
+            self.hide()
+            return
+        if ev.key() == Qt.Key.Key_L and ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.output.clear()
+            return
+        super().keyPressEvent(ev)
 
     def append_line(self, text: str, kind: str) -> None:
         color = {
@@ -491,6 +719,7 @@ class ChatWindow(QWidget):
             if box.exec() != QMessageBox.StandardButton.Ok:
                 return
             self._opted_in = True
+        self.input.push(text)
         self.input.clear()
         self.append_line(f"❯ {text}", "system")
         self.set_running(True)
@@ -514,6 +743,7 @@ class Rocky(QWidget):
         self.session = session
         self.sprites: dict[str, QPixmap] = {}
         self._load_sprites()
+        self.voice = VoicePack(SOUND_DIR)
 
         self.label = QLabel(self)
         self.label.resize(SPRITE_SIZE, SPRITE_SIZE)
@@ -549,6 +779,7 @@ class Rocky(QWidget):
         session.task_complete.connect(self._on_task_complete)
         session.tool_use_seen.connect(self._on_tool_use)
         session.session_died.connect(self._on_session_died)
+        session.usage_updated.connect(self.chat.set_usage)
         # readiness flag (no chat noise) — tooltip + first-send gate live elsewhere
         self._claude_ready = False
         session.ready.connect(self._on_claude_ready)
@@ -574,32 +805,50 @@ class Rocky(QWidget):
         self.idle_timer.timeout.connect(self._idle_tick)
         self._schedule_idle()
 
+        # lock-screen detection (Win32 only) — poll every 3s
+        self._was_locked = False
+        self._was_visible_pre_lock = True
+        if sys.platform == "win32":
+            self.lock_timer = QTimer(self)
+            self.lock_timer.timeout.connect(self._tick_lock_state)
+            self.lock_timer.start(3000)
+
         self._render()
 
     def _load_sprites(self) -> None:
+        # render at native pixel density so sprites stay crisp on 4K / 200% scaling
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 1.0
+        target = max(1, int(round(SPRITE_SIZE * dpr)))
         for key, fname in SPRITE_FILES.items():
             path = SPRITE_DIR / fname
             pix = QPixmap(str(path))
             if pix.isNull():
                 raise RuntimeError(f"failed to load sprite: {path}")
-            self.sprites[key] = pix.scaled(
-                SPRITE_SIZE, SPRITE_SIZE,
+            scaled = pix.scaled(
+                target, target,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
+            scaled.setDevicePixelRatio(dpr)
+            self.sprites[key] = scaled
+            # pre-flip to right-facing (avoids per-frame transformed() allocation)
+            flipped = scaled.transformed(QTransform().scale(-1, 1))
+            flipped.setDevicePixelRatio(dpr)
+            self.sprites[key + "_r"] = flipped
 
     # -- rendering --
     def _current_pixmap(self) -> QPixmap:
         if self.is_jazzing:
-            base = self.sprites[f"jazz{(self.jazz_frame % 3) + 1}"]
+            key = f"jazz{(self.jazz_frame % 3) + 1}"
         elif self.is_chat_open:
-            base = self.sprites["stand"]
+            key = "stand"
         else:
-            base = self.sprites["walk1" if self.walk_frame == 0 else "walk2"]
-        # sprites face left; flip when moving right
+            key = "walk1" if self.walk_frame == 0 else "walk2"
+        # sprites face left; pre-flipped right-facing variant cached as key + "_r"
         if self.direction > 0 and not self.is_chat_open:
-            return base.transformed(QTransform().scale(-1, 1))
-        return base
+            return self.sprites[key + "_r"]
+        return self.sprites[key]
 
     def _render(self) -> None:
         self.label.setPixmap(self._current_pixmap())
@@ -668,18 +917,21 @@ class Rocky(QWidget):
         self._claude_ready = True
         if hasattr(self, "_tray") and self._tray is not None:
             self._tray.setToolTip("agentrocky — ready")
+        self.voice.play("session_start")
 
     # -- session events --
     def _on_task_complete(self) -> None:
         self.chat.set_running(False)
         self._start_jazz()
         self._show_bubble(random.choice(DONE_BUBBLES))
+        self.voice.play("task_complete")
 
     def _on_tool_use(self, _name: str) -> None:
         self._show_bubble(random.choice(TOOL_BUBBLES))
 
     def _on_user_send(self, text: str) -> None:
         self.session.send(text)
+        self.voice.play("task_acknowledge")
 
     def _on_session_died(self) -> None:
         self.chat.set_running(False)
@@ -690,6 +942,7 @@ class Rocky(QWidget):
             "[claude session ended — Restart Claude from the tray menu]",
             "error",
         )
+        self.voice.play("task_error")
 
     def restart_claude(self) -> None:
         """Tear down and respawn the claude subprocess."""
@@ -699,6 +952,39 @@ class Rocky(QWidget):
         if hasattr(self, "_tray") and self._tray is not None:
             self._tray.setToolTip("agentrocky — starting…")
         self.session.start()
+
+    # -- lock screen --
+    @staticmethod
+    def _is_workstation_locked() -> bool:
+        """True if Windows workstation is locked. Uses OpenInputDesktop heuristic."""
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            DESKTOP_SWITCHDESKTOP = 0x0100
+            h = user32.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
+            if not h:
+                return True
+            user32.CloseDesktop(h)
+            return False
+        except Exception:
+            return False
+
+    def _tick_lock_state(self) -> None:
+        locked = self._is_workstation_locked()
+        if locked and not self._was_locked:
+            self._was_locked = True
+            self._was_visible_pre_lock = self.isVisible()
+            if self.is_chat_open:
+                self._toggle_chat()
+            self.bubble.hide()
+            self.hide()
+            self.voice.stop()
+        elif not locked and self._was_locked:
+            self._was_locked = False
+            if self._was_visible_pre_lock:
+                self.show()
 
     # -- multi-monitor / DPI changes --
     def _on_screen_changed(self, *_args) -> None:
@@ -713,6 +999,27 @@ class Rocky(QWidget):
     def mousePressEvent(self, ev) -> None:  # noqa: N802
         if ev.button() == Qt.MouseButton.LeftButton:
             self._press_pos = ev.globalPosition().toPoint()
+        elif ev.button() == Qt.MouseButton.RightButton:
+            self._show_context_menu(ev.globalPosition().toPoint())
+
+    def _show_context_menu(self, global_pos: QPoint) -> None:
+        m = QMenu(self)
+        m.addAction("Show Chat", self.show_chat)
+        m.addAction("Restart Claude", self.restart_claude)
+        m.addSeparator()
+        voice_label = f"Voice: {'On' if self.voice.enabled else 'Off'}"
+        voice_action = m.addAction(voice_label)
+        voice_action.setEnabled(bool(self.voice.by_category))
+        voice_action.triggered.connect(self._toggle_voice)
+        m.addSeparator()
+        m.addAction("Hide Rocky", self.hide)
+        m.addAction("Quit", QApplication.instance().quit)
+        m.exec(global_pos)
+
+    def _toggle_voice(self) -> None:
+        on = self.voice.toggle()
+        if hasattr(self, "_tray_voice_action") and self._tray_voice_action is not None:
+            self._tray_voice_action.setText(f"Voice: {'On' if on else 'Off'}")
 
     def mouseReleaseEvent(self, ev) -> None:  # noqa: N802
         if ev.button() != Qt.MouseButton.LeftButton or self._press_pos is None:
@@ -727,6 +1034,10 @@ class Rocky(QWidget):
         if self.is_chat_open:
             self.chat.hide()
             self.is_chat_open = False
+            # resume motion
+            self.move_timer.start(MOVE_TICK_MS)
+            self.walk_timer.start(WALK_FRAME_MS)
+            self._schedule_idle()
         else:
             # anchor near rocky, above him; clamp into screen
             scr = self._screen
@@ -740,6 +1051,10 @@ class Rocky(QWidget):
             self.chat.raise_()
             self.chat.input.setFocus()
             self.is_chat_open = True
+            # pause motion + idle jazz while chatting (saves wakeups)
+            self.move_timer.stop()
+            self.walk_timer.stop()
+            self.idle_timer.stop()
         self._render()
 
 
@@ -762,6 +1077,12 @@ def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
     menu.addAction("Open Audit Log", lambda: os.startfile(str(AUDIT_LOG))
                    if AUDIT_LOG.exists() else None)
     menu.addSeparator()
+    voice_label = f"Voice: {'On' if rocky.voice.enabled else 'Off'}"
+    voice_action = menu.addAction(voice_label)
+    voice_action.setEnabled(bool(rocky.voice.by_category))
+    voice_action.triggered.connect(rocky._toggle_voice)
+    rocky._tray_voice_action = voice_action
+    menu.addSeparator()
     quit_action = menu.addAction("Quit")
     quit_action.triggered.connect(app.quit)
     tray.setContextMenu(menu)
@@ -776,6 +1097,7 @@ def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    _install_excepthook()
 
     # single-instance lock (silent exit if already running)
     shm = QSharedMemory("agentrocky-singleton-v1")
@@ -809,8 +1131,9 @@ def main() -> int:
     rocky._tray = tray  # let rocky update tooltip on ready
     app._agentrocky_tray = tray  # prevent GC
 
-    # clean shutdown of claude subprocess
+    # clean shutdown of claude subprocess + audio
     app.aboutToQuit.connect(session.stop)
+    app.aboutToQuit.connect(rocky.voice.stop)
 
     session.start()
     return app.exec()
