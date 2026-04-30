@@ -4,71 +4,60 @@ An **unofficial** Windows port of [**agentrocky**](https://github.com/itmesneha/
 by [**@itmesneha**](https://github.com/itmesneha) — a desktop pixel-art companion
 that walks across your screen and talks to Claude Code from a retro terminal popover.
 
-> ⚠️ This is a community port. The original macOS/Swift app, the character "Rocky,"
-> and **all sprite assets** are the work of **@itmesneha**. All credit for the
-> concept, art, and behaviors goes to her. This repo only re-implements the runtime
-> on Windows in Python + PyQt6.
+> ⚠️ Community port. The original macOS/Swift app, the character "Rocky," and
+> **all sprite assets** are the work of **@itmesneha**. All credit for the concept,
+> art, and behaviors goes to her. This repo only re-implements the runtime on
+> Windows in Python + PyQt6, plus a few extras (voice, MCP assistant tools).
 >
 > Original repo: <https://github.com/itmesneha/agentrocky>
-
-## Demo
-
-*(Demo recording coming soon.)*
 
 ## What it does
 
 Rocky is a tiny pixel character who:
 
-- Walks back and forth above your Windows taskbar.
-- Bounces at screen edges, flipping his sprite when he turns.
-- Pops a 420×520 retro green-on-black terminal when you click him.
-- Talks to **Claude Code** through that terminal — color-coded output for assistant
-  text (green), tool calls (cyan), and errors (red).
-- Celebrates with a 2.4-second jazz dance when Claude finishes a task.
-- Spontaneously breaks into jazz every 15–45 seconds when you're not chatting.
-- Shows speech bubbles ("rocky thinking", "fist my bump", etc.) when Claude is
-  using tools or finishes a turn.
-
-All of the above is described in @itmesneha's [original README](https://github.com/itmesneha/agentrocky#readme)
-— this Windows build mirrors that behavior.
+- Walks across your screen above the taskbar, bounces at edges, breaks into jazz.
+- Pops a retro green-on-black terminal popover when you click him.
+- Talks to **Claude Code** through that terminal — color-coded assistant text,
+  tool calls, errors. Stream-json parsing.
+- Shows speech bubbles on tool use / turn end.
+- Plays Rocky voice clips on lifecycle events (start, done, error, idle, etc.).
+- Exposes four MCP tools so Claude can set reminders, take notes, open URLs/files,
+  and launch whitelisted desktop apps.
 
 ## Requirements
 
-- **Windows 10 / 11**
-- **Python 3.10+**
-- **[PyQt6](https://pypi.org/project/PyQt6/)**
-- **[Claude Code CLI](https://docs.claude.com/en/docs/claude-code)** installed and
+- Windows 10 / 11
+- Python 3.10+
+- [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) installed and
   authenticated (`claude login` once)
-- The 6 sprite PNGs from the original repo (see below)
+- The 6 sprite PNGs from the original repo (not redistributed here)
 
 ## Setup
 
 ```bash
-# 1. Clone this repo
 git clone <this-repo-url>
 cd agentrocky-windows
 
-# 2. Install PyQt6
-pip install PyQt6
+pip install -r requirements.txt
 
-# 3. Install Claude Code (if you haven't)
 npm install -g @anthropic-ai/claude-code
 claude login
-
-# 4. Add the sprites
-#    Copy the 6 PNG assets from the original repo's
-#    agentrocky/Assets.xcassets folder into ./sprites/ here.
-#    Required filenames:
-#      sprites/stand.png
-#      sprites/walkleft1.png
-#      sprites/walkleft2.png
-#      sprites/jazz1.png
-#      sprites/jazz2.png
-#      sprites/jazz3.png
 ```
 
-The sprites are **not redistributed** in this repo out of respect for the original
-author. Please get them from <https://github.com/itmesneha/agentrocky>.
+Then copy the 6 PNG sprites from
+[itmesneha/agentrocky](https://github.com/itmesneha/agentrocky)'s
+`Assets.xcassets` into `./sprites/`:
+
+```
+sprites/stand.png
+sprites/walkleft1.png
+sprites/walkleft2.png
+sprites/jazz1.png
+sprites/jazz2.png
+sprites/jazz3.png
+```
+
+Sprites are **not redistributed** here out of respect for the original author.
 
 ## Run
 
@@ -76,71 +65,76 @@ author. Please get them from <https://github.com/itmesneha/agentrocky>.
 pythonw rocky.py
 ```
 
-`pythonw.exe` (instead of `python.exe`) hides the console window — Rocky should
-appear above your taskbar and start walking.
+`pythonw.exe` hides the console. Right-click rocky (or the tray icon) for
+**Show Chat / Hide / Restart Claude / Voice / Quit**.
 
-To stop him for now: **Task Manager → end `pythonw.exe`**. (A proper tray-icon
-quit menu is on the [improvement plan](improvement_plan.md).)
+## Safety
 
-## Safety warning
+Rocky launches `claude` with `--dangerously-skip-permissions`. Claude can run
+shell commands, edit files, and call tools without per-action prompts.
+Mitigations in this port:
 
-Rocky launches `claude` with `--dangerously-skip-permissions`. That means Claude
-can run shell commands, edit files, and call tools **without asking for each
-action**. The first time you send a message in a session, Rocky shows a
-confirmation dialog — read it.
+- Claude's cwd is sandboxed to `~/agentrocky-workspace/` (override with
+  `AGENTROCKY_CWD`).
+- First send each session shows a confirmation dialog.
+- `~/.agentrocky/audit.log` records every `user_send` and `tool_use` (no
+  assistant text, no results).
+- `rocky.open` only opens URLs or files inside the workspace.
+- `rocky.launch_app` is gated by a hardcoded executable whitelist.
 
-The current working directory passed to Claude is your **home folder** (`%USERPROFILE%`),
-so Claude has read/write access to anything in there. The improvement plan moves
-this to a sandboxed `~/agentrocky-workspace/` folder.
+If you don't want autonomous tool execution, don't use this app.
 
-If you don't want autonomous tool execution, don't use this app — or fork it and
-remove the flag.
+## Personal assistant tools (V3)
+
+Rocky exposes four MCP tools that Claude calls from chat:
+
+| Tool | What it does |
+|---|---|
+| `rocky.reminder` | Schedule one-shot toast + voice clip. *"remind me in 30 minutes to stretch"* |
+| `rocky.note` | Append timestamped line to `~/agentrocky-workspace/notes.md` |
+| `rocky.open` | Open URL or file inside the workspace |
+| `rocky.launch_app` | Spawn whitelisted app: notepad, calc, explorer, cmd, paint, wordpad, word, excel, powerpoint, outlook, chrome, edge, firefox |
+
+Reminders persist in `~/.agentrocky/reminders.json`. Missed-by-<1h fire on next
+launch; older drop. **Rocky must be running for reminders to fire** —
+schtasks integration is V3.5.
 
 ## Architecture
 
-Single file: `rocky.py` (~620 lines). Three main pieces:
+Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
 
-- **`Rocky`** — frameless transparent always-on-top widget holding the sprite,
-  driven by 60 fps movement and 8 fps walk-cycle timers.
-- **`ChatWindow`** — frameless dark popover with a `QTextEdit` output and
-  `QLineEdit` input. Header is draggable.
-- **`ClaudeSession`** — wraps a persistent `claude` subprocess in stream-json
-  mode. Daemon threads read stdout/stderr; cross-thread updates use `pyqtSignal`
-  so the GUI thread is the only thing touching widgets.
+- **`Rocky`** — frameless transparent always-on-top widget; 60 fps move + 8 fps
+  walk-cycle timers.
+- **`ChatWindow`** — frameless dark popover, `QTextEdit` output + `QLineEdit`
+  input, draggable header, ↑/↓ history, Esc to close, Ctrl+L to clear, token
+  counter.
+- **`ClaudeSession`** — persistent `claude` subprocess in stream-json mode.
+  Daemon threads read stdout/stderr; cross-thread updates via `pyqtSignal`.
+- **`ReminderManager`** — `QFileSystemWatcher` on `reminders.json` → `QTimer`
+  fires → native Win10/11 toast + voice clip.
+- **`mcp_server.py`** — exposes the four tools to Claude via `--mcp-config`.
 
 ```
 [Rocky GUI]  ── stdin →  [claude.exe]  ── HTTPS ──▶ Anthropic API
-              ← stdout ─
-              ← stderr ─
-   ▲
-   pyqtSignal (queued, thread-safe)
+              ← stdout ─       │
+              ← stderr ─       │ stdio
+                               ▼
+                       [mcp_server.py]
 ```
 
 ## Differences from the original
 
-| Area | Original (macOS/Swift) | This port (Windows/Python) |
-|------|------------------------|----------------------------|
-| Language / UI | Swift + SwiftUI | Python + PyQt6 |
-| Window type | `NSPanel`, joins all Spaces | Qt frameless `Tool` window, current desktop only |
-| Anchor | Above macOS Dock | ~50 px above Windows taskbar |
-| Hide console | Native | `pythonw.exe` + `CREATE_NO_WINDOW` flag |
-| Threading | Swift async + Combine | `threading.Thread` + `pyqtSignal` |
-| Bubble shape | Custom SwiftUI `BubbleTail` | `QPainter` rounded rect + triangle tail |
-| Quit affordance | macOS app menu | None yet (planned: tray icon) |
+- Windows-native: PyQt6 instead of SwiftUI; tray icon + right-click menu for
+  quit (no macOS app menu).
+- Single-instance lock via `QSharedMemory`.
+- Multi-monitor + High-DPI aware; hides on Win+L lock screen.
+- Workspace sandbox + audit log.
+- Voice pack on lifecycle events.
+- MCP assistant tools (reminder / note / open / launch_app).
+- Crash recovery via global excepthook → `~/.agentrocky/log.txt`.
 
-Behavior parity (walk speed, jazz timing, bubble messages, color codes,
-stream-json parsing) follows the original spec.
-
-## Roadmap
-
-See [`improvement_plan.md`](improvement_plan.md) for the full list. P0 (next):
-
-- System tray icon with **Quit** menu
-- Kill the `claude` subprocess cleanly on quit
-- Single-instance lock (no double-rocky)
-- Drop the `[claude ready]` line from chat
-- Audit log of user sends + tool uses (`~/.agentrocky/audit.log`)
-- Sandbox cwd to `~/agentrocky-workspace/`
+Behavior parity (walk speed, jazz timing, bubble messages, stream-json colors)
+follows the original spec.
 
 ## Credits
 
@@ -151,37 +145,9 @@ See [`improvement_plan.md`](improvement_plan.md) for the full list. P0 (next):
   [@Akshat1903](https://github.com/Akshat1903) —
   [rocky-peon-ping](https://github.com/Akshat1903/rocky-peon-ping),
   licensed CC-BY-NC-4.0. Voice references Rocky from Andy Weir's
-  *Project Hail Mary*. Non-commercial use only.
+  *Project Hail Mary*. **Non-commercial use only.** Toggle via tray menu or
+  right-click rocky → **Voice**.
 - **Windows port:** this repo. Built with PyQt6.
-
-### Voice (Windows only)
-
-Lifecycle voice clips are vendored from
-[rocky-peon-ping](https://github.com/Akshat1903/rocky-peon-ping) by
-[@Akshat1903](https://github.com/Akshat1903), licensed CC-BY-NC-4.0. The
-voice references Rocky from Andy Weir's *Project Hail Mary* — **non-commercial
-use only**. Toggle on/off via tray menu or right-click rocky → **Voice**.
-
-### Personal assistant tools (V3)
-
-Rocky exposes four MCP tools that Claude can call from chat:
-
-| Tool | What it does |
-|---|---|
-| `rocky.reminder` | Schedule a one-shot toast + voice clip. e.g. *"rocky remind me in 30 minutes to stretch"* |
-| `rocky.note` | Append a timestamped line to `~/agentrocky-workspace/notes.md` |
-| `rocky.open` | Open a URL or a file inside the workspace |
-| `rocky.launch_app` | Spawn a whitelisted desktop app: notepad, calc, explorer, cmd, paint, wordpad, word, excel, powerpoint, outlook, chrome, edge, firefox |
-
-Reminders persist in `~/.agentrocky/reminders.json` and survive rocky restarts
-(missed-by-<1h fire on next launch). **Rocky must be running for reminders to
-fire** — schtasks integration is V3.5.
-
-Install the extra deps with:
-
-```bash
-pip install -r requirements.txt
-```
 
 If you like the project, ⭐ the **original repo** first:
 <https://github.com/itmesneha/agentrocky>.
@@ -191,3 +157,4 @@ If you like the project, ⭐ the **original repo** first:
 Code in this repo: see `LICENSE` (TBD — recommend matching the original repo's
 license). **Sprite assets are not included** and remain under the original
 author's terms — fetch them from the upstream repo and follow her license.
+Voice clips under CC-BY-NC-4.0 (see `sounds/LICENSE-VOICE.md`).
