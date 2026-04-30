@@ -1,0 +1,4 @@
+PyQt6>=6.5
+mcp>=1.27
+winrt-Windows.UI.Notifications>=3.2
+winrt-Windows.Data.Xml.Dom>=3.2

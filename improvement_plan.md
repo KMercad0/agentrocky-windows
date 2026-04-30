@@ -14,6 +14,7 @@ Distribution items (PyInstaller, autostart) deferred to post-demo.
 | P3 | 19, 23, 30 | ✅ shipped |
 | P3 | 34, 35 | ⏳ deferred (post-demo) |
 | P4 | Voice pack V1 (lifecycle SFX) | ✅ shipped — see `featuresV1.md` |
+| P4 | Personal assistant V3 (MCP: reminder/note/open/launch_app) | ✅ shipped — see `featuresV1.md` |
 | Misc | 20, 22, 25, 31, 32, 33 | ⏳ open / skipped |
 
 Per-item status is also marked inline below.
@@ -207,3 +208,8 @@ Hook in `ClaudeSession.send` (kind="user_send") and `_dispatch` tool_use branch 
 4. First message → no `[claude ready]` line; warning dialog still appears
 5. After tool-using turn: `cat ~/.agentrocky/audit.log` → 2+ JSON lines (user_send, tool_use)
 6. `ls ~/agentrocky-workspace` → exists; ask claude to write a file → lands there, not in `~`
+
+
+# next is health checks
+# search for intervals for health checks/ water breaks / stretches etc etc
+# also format the -tool search- mcp_agent_rocky_rocky_launch app with somethign that rocky would say and not a default command line prompt

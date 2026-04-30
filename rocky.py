@@ -30,7 +30,7 @@ else:
 
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QObject, pyqtSignal, QSize, QRectF, QSharedMemory,
-    QElapsedTimer,
+    QElapsedTimer, QFileSystemWatcher,
 )
 from PyQt6.QtGui import (
     QPixmap, QTransform, QPainter, QColor, QFont, QFontDatabase,
@@ -86,6 +86,27 @@ WORKSPACE = Path(os.environ.get("AGENTROCKY_CWD") or (Path.home() / "agentrocky-
 AUDIT_DIR = Path.home() / ".agentrocky"
 AUDIT_LOG = AUDIT_DIR / "audit.log"
 CRASH_LOG = AUDIT_DIR / "log.txt"
+REMINDERS_JSON = AUDIT_DIR / "reminders.json"
+MCP_CONFIG_JSON = AUDIT_DIR / "mcp_config.json"
+MCP_SERVER_PY = Path(__file__).parent / "mcp_server.py"
+
+
+def _write_mcp_config() -> Path:
+    """Write the local MCP config that points claude at our sidecar server."""
+    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        "mcpServers": {
+            "agentrocky": {
+                "command": sys.executable,
+                "args": [str(MCP_SERVER_PY)],
+                "env": {
+                    "AGENTROCKY_CWD": str(WORKSPACE),
+                },
+            }
+        }
+    }
+    MCP_CONFIG_JSON.write_text(json.dumps(cfg, indent=2), "utf-8")
+    return MCP_CONFIG_JSON
 
 
 def _install_excepthook() -> None:
@@ -124,6 +145,31 @@ def audit(kind: str, payload) -> None:
             }) + "\n")
     except Exception:
         pass  # never let logging break the app
+
+
+def show_toast(title: str, body: str) -> bool:
+    """Native Win10/11 toast. Returns False if winrt unavailable / fails."""
+    if sys.platform != "win32":
+        return False
+    try:
+        from html import escape
+        from winrt.windows.ui.notifications import (
+            ToastNotification, ToastNotificationManager,
+        )
+        from winrt.windows.data.xml.dom import XmlDocument
+        xml = (
+            "<toast><visual><binding template='ToastGeneric'>"
+            f"<text>{escape(title)}</text>"
+            f"<text>{escape(body)}</text>"
+            "</binding></visual></toast>"
+        )
+        doc = XmlDocument()
+        doc.load_xml(xml)
+        notifier = ToastNotificationManager.create_toast_notifier_with_id("agentrocky")
+        notifier.show(ToastNotification(doc))
+        return True
+    except Exception:
+        return False
 
 
 def mono_font(size: int = 12) -> QFont:
@@ -298,6 +344,8 @@ class ClaudeSession(QObject):
             "--verbose",
             "--dangerously-skip-permissions",
         ]
+        if MCP_CONFIG_JSON.exists():
+            argv += ["--mcp-config", str(MCP_CONFIG_JSON)]
         creationflags = 0
         if sys.platform == "win32":
             creationflags = 0x08000000  # CREATE_NO_WINDOW
@@ -1124,6 +1172,116 @@ class Rocky(QWidget):
         self._render()
 
 
+# -- reminders ----------------------------------------------------------------
+
+class ReminderManager(QObject):
+    """Watches REMINDERS_JSON, schedules QTimer fires, shows toast + voice on fire.
+
+    MCP server appends entries to REMINDERS_JSON; QFileSystemWatcher picks up
+    the change and we schedule any new ones. On launch, missed-by-<1h fire
+    immediately; older ones drop. Single-process: rocky must be running.
+    """
+
+    GRACE_SEC = 3600  # missed-by < 1h fires immediately on relaunch
+
+    def __init__(self, voice: "VoicePack",
+                 tray: QSystemTrayIcon | None,
+                 parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.voice = voice
+        self.tray = tray
+        self._scheduled: dict[str, tuple[QTimer, dict]] = {}
+        REMINDERS_JSON.parent.mkdir(parents=True, exist_ok=True)
+        if not REMINDERS_JSON.exists():
+            REMINDERS_JSON.write_text("[]", "utf-8")
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.addPath(str(REMINDERS_JSON))
+        self._watcher.addPath(str(REMINDERS_JSON.parent))
+        self._watcher.fileChanged.connect(self._on_change)
+        self._watcher.directoryChanged.connect(self._on_change)
+        QTimer.singleShot(0, self._reload)
+
+    def _on_change(self, _path: str) -> None:
+        # debounce: rapid sequential writes settle before reload
+        QTimer.singleShot(150, self._reload)
+
+    def _reload(self) -> None:
+        # editors / atomic-rename can drop our watch; re-add defensively
+        if str(REMINDERS_JSON) not in self._watcher.files():
+            if REMINDERS_JSON.exists():
+                self._watcher.addPath(str(REMINDERS_JSON))
+        try:
+            entries = json.loads(REMINDERS_JSON.read_text("utf-8"))
+        except Exception:
+            return
+        now = datetime.now(timezone.utc)
+        kept: list[dict] = []
+        changed = False
+        for e in entries:
+            rid = e.get("id")
+            if not rid:
+                changed = True
+                continue
+            if rid in self._scheduled:
+                kept.append(e)
+                continue
+            try:
+                fire_at = datetime.fromisoformat(e["fire_at"])
+                if fire_at.tzinfo is None:
+                    fire_at = fire_at.replace(tzinfo=timezone.utc)
+            except Exception:
+                changed = True
+                continue
+            delta = (fire_at - now).total_seconds()
+            if delta <= 0:
+                if delta > -self.GRACE_SEC:
+                    self._fire(e)
+                changed = True
+                continue
+            ms = int(min(delta * 1000, 2_147_483_000))
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(lambda eid=rid: self._fire_by_id(eid))
+            t.start(ms)
+            self._scheduled[rid] = (t, e)
+            kept.append(e)
+        if changed:
+            try:
+                REMINDERS_JSON.write_text(json.dumps(kept, indent=2), "utf-8")
+            except Exception:
+                pass
+
+    def _fire_by_id(self, rid: str) -> None:
+        pair = self._scheduled.pop(rid, None)
+        if pair is None:
+            return
+        _, entry = pair
+        self._fire(entry)
+        try:
+            entries = json.loads(REMINDERS_JSON.read_text("utf-8"))
+            entries = [e for e in entries if e.get("id") != rid]
+            REMINDERS_JSON.write_text(json.dumps(entries, indent=2), "utf-8")
+        except Exception:
+            pass
+
+    def _fire(self, entry: dict) -> None:
+        text = str(entry.get("text", "(reminder)"))
+        ok = show_toast("rocky reminder", text)
+        if not ok and self.tray is not None:
+            try:
+                self.tray.showMessage(
+                    "rocky reminder", text,
+                    QSystemTrayIcon.MessageIcon.Information, 5000,
+                )
+            except Exception:
+                pass
+        try:
+            self.voice.play("session_start")
+        except Exception:
+            pass
+        audit("reminder_fire", {"id": entry.get("id"), "text": text})
+
+
 # -- main ---------------------------------------------------------------------
 
 def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
@@ -1179,6 +1337,13 @@ def main() -> int:
                              f"Cannot create workspace at {WORKSPACE}:\n{e}")
         return 1
 
+    # write MCP config so claude can call rocky tools (reminder/note/open/launch)
+    if MCP_SERVER_PY.exists():
+        try:
+            _write_mcp_config()
+        except Exception as e:
+            print(f"warning: could not write MCP config: {e}", file=sys.stderr)
+
     missing = [f for f in SPRITE_FILES.values() if not (SPRITE_DIR / f).exists()]
     if missing:
         QMessageBox.critical(
@@ -1196,6 +1361,10 @@ def main() -> int:
     tray = _build_tray(app, rocky)
     rocky._tray = tray  # let rocky update tooltip on ready
     app._agentrocky_tray = tray  # prevent GC
+
+    # reminder scheduler — watches reminders.json, fires QTimer + toast + voice
+    reminders = ReminderManager(rocky.voice, tray)
+    app._agentrocky_reminders = reminders  # keep reference alive
 
     # clean shutdown of claude subprocess + audio
     app.aboutToQuit.connect(session.stop)

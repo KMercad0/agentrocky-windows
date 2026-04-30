@@ -162,6 +162,27 @@ Lifecycle voice clips are vendored from
 voice references Rocky from Andy Weir's *Project Hail Mary* — **non-commercial
 use only**. Toggle on/off via tray menu or right-click rocky → **Voice**.
 
+### Personal assistant tools (V3)
+
+Rocky exposes four MCP tools that Claude can call from chat:
+
+| Tool | What it does |
+|---|---|
+| `rocky.reminder` | Schedule a one-shot toast + voice clip. e.g. *"rocky remind me in 30 minutes to stretch"* |
+| `rocky.note` | Append a timestamped line to `~/agentrocky-workspace/notes.md` |
+| `rocky.open` | Open a URL or a file inside the workspace |
+| `rocky.launch_app` | Spawn a whitelisted desktop app: notepad, calc, explorer, cmd, paint, wordpad, word, excel, powerpoint, outlook, chrome, edge, firefox |
+
+Reminders persist in `~/.agentrocky/reminders.json` and survive rocky restarts
+(missed-by-<1h fire on next launch). **Rocky must be running for reminders to
+fire** — schtasks integration is V3.5.
+
+Install the extra deps with:
+
+```bash
+pip install -r requirements.txt
+```
+
 If you like the project, ⭐ the **original repo** first:
 <https://github.com/itmesneha/agentrocky>.
 
