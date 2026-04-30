@@ -147,6 +147,11 @@ See [`improvement_plan.md`](improvement_plan.md) for the full list. P0 (next):
 - **Original concept, character, art, and macOS app:**
   [@itmesneha](https://github.com/itmesneha) —
   <https://github.com/itmesneha/agentrocky>
+- **Voice clips (Rocky sounds):**
+  [@Akshat1903](https://github.com/Akshat1903) —
+  [rocky-peon-ping](https://github.com/Akshat1903/rocky-peon-ping),
+  licensed CC-BY-NC-4.0. Voice references Rocky from Andy Weir's
+  *Project Hail Mary*. Non-commercial use only.
 - **Windows port:** this repo. Built with PyQt6.
 
 ### Voice (Windows only)

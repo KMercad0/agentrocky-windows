@@ -737,7 +737,9 @@ class Rocky(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setStyleSheet("background: transparent;")
         self.resize(SPRITE_SIZE, SPRITE_SIZE)
 
         self.session = session
@@ -748,6 +750,8 @@ class Rocky(QWidget):
         self.label = QLabel(self)
         self.label.resize(SPRITE_SIZE, SPRITE_SIZE)
         self.label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.label.setAutoFillBackground(False)
+        self.label.setStyleSheet("background: transparent; border: none;")
 
         # state — pick the screen under the cursor (falls back to primary)
         screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
@@ -815,6 +819,68 @@ class Rocky(QWidget):
 
         self._render()
 
+    def showEvent(self, ev) -> None:  # noqa: N802
+        super().showEvent(ev)
+        if sys.platform == "win32":
+            self._strip_win32_border()
+
+    def _strip_win32_border(self) -> None:
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            GWL_STYLE = -16
+            GWL_EXSTYLE = -20
+            WS_BORDER = 0x00800000
+            WS_DLGFRAME = 0x00400000
+            WS_THICKFRAME = 0x00040000
+            WS_CAPTION = 0x00C00000
+            WS_EX_DLGMODALFRAME = 0x00000001
+            WS_EX_CLIENTEDGE = 0x00000200
+            WS_EX_STATICEDGE = 0x00020000
+            WS_EX_WINDOWEDGE = 0x00000100
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+            style &= ~(WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_CAPTION)
+            user32.SetWindowLongW(hwnd, GWL_STYLE, style)
+            ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ex &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE
+                    | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_FRAMECHANGED = 0x0020
+            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE
+                                | SWP_NOZORDER | SWP_FRAMECHANGED)
+            try:
+                dwm = ctypes.windll.dwmapi
+                DWMWA_NCRENDERING_POLICY = 2
+                DWMWA_BORDER_COLOR = 34
+                DWMWA_WINDOW_CORNER_PREFERENCE = 33
+                DWMNCRP_DISABLED = 1
+                DWMWCP_DONOTROUND = 1
+                DWMWA_COLOR_NONE = 0xFFFFFFFE
+                ncrp = ctypes.c_int(DWMNCRP_DISABLED)
+                dwm.DwmSetWindowAttribute(
+                    hwnd, DWMWA_NCRENDERING_POLICY,
+                    ctypes.byref(ncrp), ctypes.sizeof(ncrp),
+                )
+                corner = ctypes.c_int(DWMWCP_DONOTROUND)
+                dwm.DwmSetWindowAttribute(
+                    hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                    ctypes.byref(corner), ctypes.sizeof(corner),
+                )
+                color = ctypes.c_uint(DWMWA_COLOR_NONE)
+                dwm.DwmSetWindowAttribute(
+                    hwnd, DWMWA_BORDER_COLOR,
+                    ctypes.byref(color), ctypes.sizeof(color),
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _load_sprites(self) -> None:
         # render at native pixel density so sprites stay crisp on 4K / 200% scaling
         screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
@@ -828,7 +894,7 @@ class Rocky(QWidget):
             scaled = pix.scaled(
                 target, target,
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+                Qt.TransformationMode.FastTransformation,
             )
             scaled.setDevicePixelRatio(dpr)
             self.sprites[key] = scaled
