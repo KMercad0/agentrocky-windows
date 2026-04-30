@@ -13,14 +13,14 @@ that walks across your screen and talks to Claude Code from a retro terminal pop
 
 ## What it does
 
-Rocky is a tiny pixel character who:
+Rocky is Rocky, Our favorite buddy in the movie/book Project Hail Mary:
 
 - Walks across your screen above the taskbar, bounces at edges, breaks into jazz.
 - Pops a retro green-on-black terminal popover when you click him.
 - Talks to **Claude Code** through that terminal — color-coded assistant text,
   tool calls, errors. Stream-json parsing.
 - Shows speech bubbles on tool use / turn end.
-- Plays Rocky voice clips on lifecycle events (start, done, error, idle, etc.).
+- Plays Rocky voice clips on lifecycle events (start, done, error, idle, etc.). AMAZE AMAZE AMAZE
 - Exposes four MCP tools so Claude can set reminders, take notes, open URLs/files,
   and launch whitelisted desktop apps.
 
@@ -154,7 +154,7 @@ If you like the project, ⭐ the **original repo** first:
 
 ## License
 
-Code in this repo: see `LICENSE` (TBD — recommend matching the original repo's
+Code in this repo: see `LICENSE` (matching the original repo's
 license). **Sprite assets are not included** and remain under the original
 author's terms — fetch them from the upstream repo and follow her license.
 Voice clips under CC-BY-NC-4.0 (see `sounds/LICENSE-VOICE.md`).
