@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import wave
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -89,6 +89,22 @@ CRASH_LOG = AUDIT_DIR / "log.txt"
 REMINDERS_JSON = AUDIT_DIR / "reminders.json"
 MCP_CONFIG_JSON = AUDIT_DIR / "mcp_config.json"
 MCP_SERVER_PY = Path(__file__).parent / "mcp_server.py"
+HEALTH_JSON = AUDIT_DIR / "health.json"
+
+# Health check-in scheduler — local recurring nudges (water/stretch/eyes/etc.)
+HEALTH_TICK_MS = 60_000
+HEALTH_DEFAULT_CATS = {
+    "water":   {"enabled": True,  "interval_min": 60,  "jitter_min": 10,
+                "copy": "rocky thirsty. human drink water, question?"},
+    "stretch": {"enabled": True,  "interval_min": 90,  "jitter_min": 15,
+                "copy": "rocky stiff. human stretch, question?"},
+    "eyes":    {"enabled": True,  "interval_min": 20,  "jitter_min": 5,
+                "copy": "eye tired. human look far thing 20 second, question?"},
+    "posture": {"enabled": False, "interval_min": 45,  "jitter_min": 10,
+                "copy": "rocky see slouch. human sit straight, question?"},
+    "mental":  {"enabled": True,  "interval_min": 120, "jitter_min": 20,
+                "copy": "rocky check human mood. human ok, question?"},
+}
 
 
 def _write_mcp_config() -> Path:
@@ -1282,6 +1298,193 @@ class ReminderManager(QObject):
         audit("reminder_fire", {"id": entry.get("id"), "text": text})
 
 
+class HealthCheckManager(QObject):
+    """Recurring local nudges (water / stretch / eyes / posture / mental).
+
+    Distinct from ReminderManager: no MCP entry path, no JSON queue from Claude.
+    Per-category interval + jitter, persisted to ~/.agentrocky/health.json.
+    Quiet-hours window suppresses fires; missed fires while app off fire once
+    on next launch (no backfill).
+    """
+
+    def __init__(self, voice: "VoicePack", tray: QSystemTrayIcon | None,
+                 parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.voice = voice
+        self.tray = tray
+        self.config = self._load_or_init()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(HEALTH_TICK_MS)
+        QTimer.singleShot(0, self._tick)  # immediate check on launch
+
+    def _load_or_init(self) -> dict:
+        HEALTH_JSON.parent.mkdir(parents=True, exist_ok=True)
+        cfg: dict | None = None
+        if HEALTH_JSON.exists():
+            try:
+                cfg = json.loads(HEALTH_JSON.read_text("utf-8"))
+            except Exception:
+                cfg = None
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg.setdefault("enabled", True)
+        cfg.setdefault("quiet_start", "22:00")
+        cfg.setdefault("quiet_end", "08:00")
+        cats = cfg.setdefault("categories", {})
+        now = datetime.now().astimezone()
+        for key, default in HEALTH_DEFAULT_CATS.items():
+            entry = cats.setdefault(key, {})
+            for k, v in default.items():
+                entry.setdefault(k, v)
+            if "next_fire_at" not in entry:
+                entry["next_fire_at"] = self._roll_next(entry, now).isoformat()
+        self._save(cfg)
+        return cfg
+
+    def _save(self, cfg: dict | None = None) -> None:
+        try:
+            HEALTH_JSON.write_text(
+                json.dumps(cfg if cfg is not None else self.config, indent=2),
+                "utf-8",
+            )
+        except Exception:
+            pass
+
+    def _roll_next(self, entry: dict, now: datetime) -> datetime:
+        interval = max(1, int(entry.get("interval_min", 60)))
+        jitter = max(0, int(entry.get("jitter_min", 0)))
+        offset = interval * 60
+        if jitter:
+            offset += random.randint(-jitter * 60, jitter * 60)
+        offset = max(60, offset)
+        return now + timedelta(seconds=offset)
+
+    @staticmethod
+    def _parse_hhmm(s: str, fallback: tuple[int, int]) -> tuple[int, int]:
+        try:
+            h, m = s.split(":")
+            return int(h), int(m)
+        except Exception:
+            return fallback
+
+    def _in_quiet_hours(self, now: datetime) -> bool:
+        qs_h, qs_m = self._parse_hhmm(self.config.get("quiet_start", "22:00"), (22, 0))
+        qe_h, qe_m = self._parse_hhmm(self.config.get("quiet_end", "08:00"), (8, 0))
+        cur = now.hour * 60 + now.minute
+        start = qs_h * 60 + qs_m
+        end = qe_h * 60 + qe_m
+        if start == end:
+            return False
+        if start < end:
+            return start <= cur < end
+        return cur >= start or cur < end  # wraps midnight
+
+    def _quiet_end_dt(self, now: datetime) -> datetime:
+        qe_h, qe_m = self._parse_hhmm(self.config.get("quiet_end", "08:00"), (8, 0))
+        candidate = now.replace(hour=qe_h, minute=qe_m, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
+
+    def _tick(self) -> None:
+        if not self.config.get("enabled"):
+            return
+        now = datetime.now().astimezone()
+        in_quiet = self._in_quiet_hours(now)
+        changed = False
+        for key, entry in self.config.get("categories", {}).items():
+            if not entry.get("enabled"):
+                continue
+            try:
+                nxt = datetime.fromisoformat(entry.get("next_fire_at", ""))
+                if nxt.tzinfo is None:
+                    nxt = nxt.astimezone()
+            except Exception:
+                entry["next_fire_at"] = self._roll_next(entry, now).isoformat()
+                changed = True
+                continue
+            if nxt > now:
+                continue
+            if in_quiet:
+                entry["next_fire_at"] = self._quiet_end_dt(now).isoformat()
+                changed = True
+                continue
+            self._fire(key, entry)
+            entry["next_fire_at"] = self._roll_next(entry, now).isoformat()
+            changed = True
+        if changed:
+            self._save()
+
+    def _fire(self, category: str, entry: dict) -> None:
+        text = str(entry.get("copy", f"rocky check: {category}"))
+        ok = show_toast("rocky check", text)
+        if not ok and self.tray is not None:
+            try:
+                self.tray.showMessage(
+                    "rocky check", text,
+                    QSystemTrayIcon.MessageIcon.Information, 5000,
+                )
+            except Exception:
+                pass
+        try:
+            self.voice.play("input_required")
+        except Exception:
+            pass
+        audit("health_fire", {"category": category, "text": text})
+
+    def set_master(self, on: bool) -> None:
+        self.config["enabled"] = bool(on)
+        self._save()
+
+    def set_category(self, key: str, on: bool) -> None:
+        cat = self.config.get("categories", {}).get(key)
+        if not cat:
+            return
+        cat["enabled"] = bool(on)
+        if on:
+            cat["next_fire_at"] = self._roll_next(
+                cat, datetime.now().astimezone()
+            ).isoformat()
+        self._save()
+
+
+def _attach_health_menu(tray: QSystemTrayIcon, health: HealthCheckManager) -> None:
+    """Insert Health Check-ins submenu before Quit in the existing tray menu."""
+    menu = tray.contextMenu()
+    if menu is None:
+        return
+    quit_action = None
+    for a in menu.actions():
+        if a.text() == "Quit":
+            quit_action = a
+            break
+    sep = menu.insertSeparator(quit_action) if quit_action else menu.addSeparator()
+
+    submenu = QMenu("Health Check-ins")
+    master = submenu.addAction("Master enable")
+    master.setCheckable(True)
+    master.setChecked(bool(health.config.get("enabled", True)))
+    master.toggled.connect(health.set_master)
+    submenu.addSeparator()
+    for key in HEALTH_DEFAULT_CATS:
+        cat = health.config.get("categories", {}).get(key, {})
+        interval = int(cat.get("interval_min", 0))
+        act = submenu.addAction(f"{key.capitalize()} ({interval}m)")
+        act.setCheckable(True)
+        act.setChecked(bool(cat.get("enabled", False)))
+        act.toggled.connect(lambda on, k=key: health.set_category(k, on))
+    submenu.addSeparator()
+    submenu.addAction(
+        "Edit health.json…",
+        lambda: os.startfile(str(HEALTH_JSON)) if HEALTH_JSON.exists() else None,
+    )
+    submenu_action = menu.insertMenu(sep, submenu)
+    # keep refs alive on the tray to prevent GC of submenu/actions
+    tray._agentrocky_health_submenu = submenu
+    tray._agentrocky_health_submenu_action = submenu_action
+
+
 # -- main ---------------------------------------------------------------------
 
 def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
@@ -1365,6 +1568,12 @@ def main() -> int:
     # reminder scheduler — watches reminders.json, fires QTimer + toast + voice
     reminders = ReminderManager(rocky.voice, tray)
     app._agentrocky_reminders = reminders  # keep reference alive
+
+    # health check-ins — recurring local nudges (water/stretch/eyes/etc.)
+    health = HealthCheckManager(rocky.voice, tray)
+    app._agentrocky_health = health
+    if tray is not None:
+        _attach_health_menu(tray, health)
 
     # clean shutdown of claude subprocess + audio
     app.aboutToQuit.connect(session.stop)
