@@ -94,11 +94,11 @@ def _audit(kind: str, payload: dict) -> None:
 
 def _tool_reminder(text: str, when: str) -> str:
     if len(text) > 200:
-        return "error: text too long (max 200 chars)"
+        return "rocky brain small. text too long. max 200 letter."
     try:
         fire_at = _parse_when(when)
     except Exception:
-        return f"error: could not parse 'when' = {when!r}. use '5m', '2h', '30s', or ISO 8601."
+        return f"rocky confuse. when = {when!r} no good. try '5m', '2h', '30s', or ISO 8601."
     rid = str(uuid.uuid4())
     entry = {
         "id": rid,
@@ -114,17 +114,17 @@ def _tool_reminder(text: str, when: str) -> str:
     REMINDERS_JSON.write_text(json.dumps(existing, indent=2), "utf-8")
     _audit("mcp_tool", {"tool": "reminder", "fire_at": fire_at.isoformat(), "text": text})
     local = fire_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    return f"reminder set for {local} (id={rid[:8]}): {text}"
+    return f'rocky remember! at {local} rocky shout: "{text}". (id {rid[:8]})'
 
 
 def _tool_note(text: str) -> str:
     if len(text) > 2000:
-        return "error: text too long (max 2000 chars)"
+        return "rocky tablet small. note too long. max 2000 letter."
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with NOTES_FILE.open("a", encoding="utf-8") as f:
         f.write(f"[{ts}] {text}\n")
     _audit("mcp_tool", {"tool": "note", "len": len(text)})
-    return f"note appended to {NOTES_FILE}"
+    return f"rocky scribble note in stone tablet: {NOTES_FILE}"
 
 
 def _tool_open(target: str) -> str:
@@ -132,40 +132,40 @@ def _tool_open(target: str) -> str:
         try:
             os.startfile(target)
             _audit("mcp_tool", {"tool": "open", "kind": "url", "target": target})
-            return f"opened url: {target}"
+            return f"rocky open portal: {target}"
         except Exception as e:
-            return f"error: {e}"
+            return f"rocky try, rocky fail: {e}"
     try:
         p = Path(target).resolve()
         ws = WORKSPACE.resolve()
         if not p.is_relative_to(ws):
-            return f"error: path outside workspace ({ws}). only urls or files inside workspace allowed."
+            return f"rocky cave only ({ws}). human path outside cave. forbidden."
         if not p.exists():
-            return f"error: file not found: {p}"
+            return f"rocky look. no file: {p}."
         os.startfile(str(p))
         _audit("mcp_tool", {"tool": "open", "kind": "file", "target": str(p)})
-        return f"opened file: {p}"
+        return f"rocky open scroll: {p}"
     except Exception as e:
-        return f"error: {e}"
+        return f"rocky try, rocky fail: {e}"
 
 
 def _tool_launch_app(name: str) -> str:
     key = name.strip().lower()
     if key not in LAUNCH_WHITELIST:
         allowed = ", ".join(sorted(LAUNCH_WHITELIST.keys()))
-        return f"error: '{name}' not whitelisted. allowed: {allowed}"
+        return f"rocky no know '{name}'. rocky friend list: {allowed}"
     exe = LAUNCH_WHITELIST[key]
     resolved = shutil.which(exe)
     if not resolved:
-        return f"error: {exe} not found in PATH. install or add to PATH."
+        return f"rocky search PATH. no find {exe}. install or add to PATH."
     try:
         subprocess.Popen([resolved], close_fds=True,
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                          if sys.platform == "win32" else 0)
         _audit("mcp_tool", {"tool": "launch_app", "name": key, "exe": resolved})
-        return f"launched {key} ({resolved})"
+        return f"rocky summon {key}! ({resolved})"
     except Exception as e:
-        return f"error: {e}"
+        return f"rocky try summon, rocky fail: {e}"
 
 
 # -- MCP server wiring --------------------------------------------------------
