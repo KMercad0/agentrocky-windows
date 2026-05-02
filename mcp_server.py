@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -35,7 +36,11 @@ WORKSPACE = Path(os.environ.get("AGENTROCKY_CWD") or (Path.home() / "agentrocky-
 AUDIT_DIR = Path.home() / ".agentrocky"
 AUDIT_LOG = AUDIT_DIR / "audit.log"
 REMINDERS_JSON = AUDIT_DIR / "reminders.json"
+HEALTH_JSON = AUDIT_DIR / "health.json"
 NOTES_FILE = WORKSPACE / "notes.md"
+
+# Mirror rocky.py HEALTH_DEFAULT_CATS keys; tool only allows mutating these.
+HEALTH_CATS = ("water", "stretch", "eyes", "posture", "mental")
 
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 AUDIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,6 +173,107 @@ def _tool_launch_app(name: str) -> str:
         return f"rocky try summon, rocky fail: {e}"
 
 
+def _tool_health(action: str,
+                 category: str | None = None,
+                 interval_min: int | None = None,
+                 jitter_min: int | None = None,
+                 enabled: bool | None = None) -> str:
+    """Read or modify ~/.agentrocky/health.json. Live-reload watcher in
+    rocky.py picks up changes within ~150ms. Reschedules next_fire_at when
+    interval_min changes so user sees effect on the next 60s tick."""
+    try:
+        cfg = json.loads(HEALTH_JSON.read_text("utf-8")) if HEALTH_JSON.exists() else {}
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cats = cfg.setdefault("categories", {})
+
+    act = (action or "").strip().lower()
+    if act == "list":
+        if not cats:
+            return "rocky no remember health setting yet. rocky.py write defaults on first launch."
+        lines = [f"rocky watch human ({'on' if cfg.get('enabled', True) else 'off'} master):"]
+        for k in HEALTH_CATS:
+            entry = cats.get(k)
+            if not entry:
+                continue
+            state = "on" if entry.get("enabled") else "off"
+            lines.append(
+                f"  {k}: {state}, every {entry.get('interval_min', '?')} minute "
+                f"(jitter {entry.get('jitter_min', '?')})"
+            )
+        return "\n".join(lines)
+
+    if act != "set":
+        return f"rocky no know action '{action}'. rocky try 'list' or 'set'."
+
+    if not category:
+        return "rocky need category. water, stretch, eyes, posture, or mental."
+    cat_key = category.strip().lower()
+    if cat_key not in HEALTH_CATS:
+        return f"rocky no know '{category}'. rocky friend: {', '.join(HEALTH_CATS)}."
+
+    entry = cats.setdefault(cat_key, {})
+    changes: dict = {}
+    before = {k: entry.get(k) for k in ("interval_min", "jitter_min", "enabled")}
+
+    if interval_min is not None:
+        try:
+            iv = int(interval_min)
+        except Exception:
+            return f"rocky confuse. interval_min = {interval_min!r} no number."
+        if iv < 1:
+            return "rocky brain small but not that small. interval_min must be >= 1."
+        entry["interval_min"] = iv
+        changes["interval_min"] = iv
+
+    if jitter_min is not None:
+        try:
+            jt = int(jitter_min)
+        except Exception:
+            return f"rocky confuse. jitter_min = {jitter_min!r} no number."
+        if jt < 0:
+            return "rocky no go backward in time. jitter_min must be >= 0."
+        entry["jitter_min"] = jt
+        changes["jitter_min"] = jt
+
+    if enabled is not None:
+        entry["enabled"] = bool(enabled)
+        changes["enabled"] = bool(enabled)
+
+    if not changes:
+        return "rocky see no change. pass interval_min, jitter_min, or enabled."
+
+    # Reschedule next_fire_at when interval changes (or when enabling): user
+    # expects effect soon, not after old schedule expires.
+    if "interval_min" in changes or changes.get("enabled") is True:
+        iv = int(entry.get("interval_min", 60))
+        jt = max(0, int(entry.get("jitter_min", 0)))
+        offset_s = iv * 60
+        if jt:
+            offset_s += random.randint(-jt * 60, jt * 60)
+        offset_s = max(60, offset_s)
+        nxt = datetime.now().astimezone() + timedelta(seconds=offset_s)
+        entry["next_fire_at"] = nxt.isoformat()
+
+    try:
+        HEALTH_JSON.write_text(json.dumps(cfg, indent=2), "utf-8")
+    except Exception as e:
+        return f"rocky try save, rocky fail: {e}"
+
+    _audit("mcp_tool", {
+        "tool": "health", "action": "set", "category": cat_key,
+        "before": before, "after": {k: entry.get(k) for k in ("interval_min", "jitter_min", "enabled")},
+    })
+
+    iv = entry.get("interval_min")
+    jt = entry.get("jitter_min")
+    state = "on" if entry.get("enabled") else "off"
+    return (f"rocky now check {cat_key}: {state}, every {iv} minute "
+            f"(jitter {jt}). rocky watch human.")
+
+
 # -- MCP server wiring --------------------------------------------------------
 
 server = Server("agentrocky")
@@ -218,6 +324,30 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="rocky.health",
+            description=("Read or modify rocky's recurring health check-ins "
+                         "(water/stretch/eyes/posture/mental). Action 'list' "
+                         "returns current settings. Action 'set' changes one "
+                         "category's interval_min, jitter_min, or enabled. "
+                         "Live config is at ~/.agentrocky/health.json and "
+                         "reloads automatically."),
+            inputSchema={
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "set"]},
+                    "category": {"type": "string",
+                                 "enum": list(HEALTH_CATS),
+                                 "description": "Required for 'set'."},
+                    "interval_min": {"type": "integer", "minimum": 1,
+                                     "description": "Minutes between fires."},
+                    "jitter_min": {"type": "integer", "minimum": 0,
+                                   "description": "Random +/- minutes around interval."},
+                    "enabled": {"type": "boolean"},
+                },
+            },
+        ),
+        Tool(
             name="rocky.launch_app",
             description="Launch a whitelisted desktop app: notepad, calc, "
                         "explorer, cmd, paint, wordpad, word, excel, "
@@ -245,6 +375,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             out = _tool_open(arguments["target"])
         elif name == "rocky.launch_app":
             out = _tool_launch_app(arguments["name"])
+        elif name == "rocky.health":
+            out = _tool_health(
+                arguments["action"],
+                category=arguments.get("category"),
+                interval_min=arguments.get("interval_min"),
+                jitter_min=arguments.get("jitter_min"),
+                enabled=arguments.get("enabled"),
+            )
         else:
             out = f"error: unknown tool {name}"
     except KeyError as e:

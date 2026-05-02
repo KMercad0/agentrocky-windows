@@ -516,12 +516,15 @@ class SpeechBubble(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
 
-    def show_text(self, text: str, anchor_center_x: int, anchor_top_y: int) -> None:
-        # debounce: drop if a bubble appeared too recently (prevents flicker on tool spam)
+    def show_text(self, text: str, anchor_center_x: int, anchor_top_y: int,
+                  persistent: bool = False) -> None:
+        # debounce: drop if a bubble appeared too recently (prevents flicker on tool spam).
+        # Persistent bubbles bypass debounce — health checks must always show.
         if not hasattr(self, "_etimer"):
             self._etimer = QElapsedTimer()
             self._etimer.start()
-        if self.isVisible() and self._etimer.elapsed() - self._last_shown_ms < BUBBLE_DEBOUNCE_MS:
+        if (not persistent and self.isVisible()
+                and self._etimer.elapsed() - self._last_shown_ms < BUBBLE_DEBOUNCE_MS):
             return
         self._last_shown_ms = self._etimer.elapsed()
 
@@ -539,7 +542,13 @@ class SpeechBubble(QWidget):
         self.update()
         self.show()
         self.raise_()
-        self._hide_timer.start(BUBBLE_HIDE_MS)
+        self._hide_timer.stop()
+        if not persistent:
+            self._hide_timer.start(BUBBLE_HIDE_MS)
+
+    def dismiss(self) -> None:
+        self._hide_timer.stop()
+        self.hide()
 
     def paintEvent(self, _ev) -> None:  # noqa: N802
         p = QPainter(self)
@@ -834,6 +843,8 @@ class Rocky(QWidget):
         self.is_chat_open = False
         self._chat_drag_origin: QPoint | None = None
         self._press_pos: QPoint | None = None
+        self._health_active = False
+        self._health_category: str | None = None
 
         self.move(int(self.pos_x), int(self.pos_y))
 
@@ -1025,7 +1036,8 @@ class Rocky(QWidget):
         self.idle_timer.start(random.randint(IDLE_JAZZ_MIN_MS, IDLE_JAZZ_MAX_MS))
 
     def _idle_tick(self) -> None:
-        if not self.is_chat_open and not self.is_jazzing:
+        if (not self.is_chat_open and not self.is_jazzing
+                and not self._health_active):
             self._start_jazz()
         self._schedule_idle()
 
@@ -1034,6 +1046,48 @@ class Rocky(QWidget):
         cx = int(self.pos_x + SPRITE_SIZE / 2)
         top = int(self.pos_y) + 4
         self.bubble.show_text(text, cx, top)
+
+    # -- health check ack flow --
+    def show_health_check(self, category: str, text: str) -> None:
+        """Freeze rocky + show persistent bubble. User clicks rocky to ack."""
+        if not self.isVisible():
+            return  # locked / hidden — toast already covers it
+        self._health_active = True
+        self._health_category = category
+        # freeze motion (mirrors chat-open pause path)
+        self.move_timer.stop()
+        self.walk_timer.stop()
+        # snap to stand sprite (no walk frame mid-step)
+        self.walk_frame = 0
+        self.is_jazzing = False
+        self.jazz_timer.stop()
+        self._render()
+        cx = int(self.pos_x + SPRITE_SIZE / 2)
+        top = int(self.pos_y) + 4
+        self.bubble.show_text(text, cx, top, persistent=True)
+
+    def _ack_health_check(self) -> None:
+        if not self._health_active:
+            return
+        cat = self._health_category
+        self.bubble.dismiss()
+        self._health_active = False
+        self._health_category = None
+        if not self.is_chat_open:
+            self.move_timer.start(MOVE_TICK_MS)
+            self.walk_timer.start(WALK_FRAME_MS)
+            self._schedule_idle()
+        self.voice.play("session_start")
+        audit("health_ack", {"category": cat})
+
+    def hideEvent(self, ev) -> None:  # noqa: N802
+        # Tray "Hide Rocky" or programmatic hide while health-active: clear
+        # state silently so flag isn't stuck. No voice/audit.
+        if self._health_active:
+            self.bubble.dismiss()
+            self._health_active = False
+            self._health_category = None
+        super().hideEvent(ev)
 
     # -- tray helpers --
     def show_chat(self) -> None:
@@ -1157,6 +1211,9 @@ class Rocky(QWidget):
         moved = (ev.globalPosition().toPoint() - self._press_pos).manhattanLength()
         self._press_pos = None
         if moved > 6:
+            return
+        if self._health_active:
+            self._ack_health_check()
             return
         self._toggle_chat()
 
@@ -1307,6 +1364,8 @@ class HealthCheckManager(QObject):
     on next launch (no backfill).
     """
 
+    fired = pyqtSignal(str, str)  # category, text — drives Rocky.show_health_check
+
     def __init__(self, voice: "VoicePack", tray: QSystemTrayIcon | None,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -1316,7 +1375,31 @@ class HealthCheckManager(QObject):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(HEALTH_TICK_MS)
+        # live-reload health.json on external edits (mirror ReminderManager).
+        # self-writes also trigger this; reload is idempotent (setdefault keys
+        # already present) so no extra fires.
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.addPath(str(HEALTH_JSON))
+        self._watcher.addPath(str(HEALTH_JSON.parent))
+        self._watcher.fileChanged.connect(self._on_change)
+        self._watcher.directoryChanged.connect(self._on_change)
         QTimer.singleShot(0, self._tick)  # immediate check on launch
+
+    def _on_change(self, _path: str) -> None:
+        # debounce: rapid sequential writes settle before reload
+        QTimer.singleShot(150, self._reload)
+
+    def _reload(self) -> None:
+        # editors / atomic-rename drop the watch; re-add defensively
+        if str(HEALTH_JSON) not in self._watcher.files():
+            if HEALTH_JSON.exists():
+                self._watcher.addPath(str(HEALTH_JSON))
+        try:
+            cfg = json.loads(HEALTH_JSON.read_text("utf-8"))
+            if isinstance(cfg, dict):
+                self.config = cfg
+        except Exception:
+            pass
 
     def _load_or_init(self) -> dict:
         HEALTH_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -1329,8 +1412,10 @@ class HealthCheckManager(QObject):
         if not isinstance(cfg, dict):
             cfg = {}
         cfg.setdefault("enabled", True)
-        cfg.setdefault("quiet_start", "22:00")
-        cfg.setdefault("quiet_end", "08:00")
+        # Quiet hours disabled by default — start == end short-circuits in
+        # _in_quiet_hours. User opts in by editing health.json.
+        cfg.setdefault("quiet_start", "00:00")
+        cfg.setdefault("quiet_end", "00:00")
         cats = cfg.setdefault("categories", {})
         now = datetime.now().astimezone()
         for key, default in HEALTH_DEFAULT_CATS.items():
@@ -1432,6 +1517,7 @@ class HealthCheckManager(QObject):
         except Exception:
             pass
         audit("health_fire", {"category": category, "text": text})
+        self.fired.emit(category, text)
 
     def set_master(self, on: bool) -> None:
         self.config["enabled"] = bool(on)
@@ -1571,6 +1657,7 @@ def main() -> int:
 
     # health check-ins — recurring local nudges (water/stretch/eyes/etc.)
     health = HealthCheckManager(rocky.voice, tray)
+    health.fired.connect(rocky.show_health_check)
     app._agentrocky_health = health
     if tray is not None:
         _attach_health_menu(tray, health)
