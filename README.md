@@ -24,12 +24,21 @@ Rocky is Rocky, Our favorite buddy in the movie/book Project Hail Mary:
 - Exposes four MCP tools so Claude can set reminders, take notes, open URLs/files,
   and launch whitelisted desktop apps.
 
+## Install (non-tech, no Python needed)
+
+Grab the latest zip from
+[**Releases**](https://github.com/KMercad0/agentrocky-windows/releases),
+unzip, double-click `setup.bat`. It installs the Claude CLI, logs you in,
+walks you through dropping the 6 sprite PNGs in. Done.
+
+Full step-by-step + troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md).
+
 ## Requirements
 
 - Windows 10 / 11
-- Python 3.10+
+- Python 3.10+ (only if running from source — release zip has its own runtime)
 - [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) installed and
-  authenticated (`claude login` once)
+  authenticated (`claude login` once — `setup.bat` does this for you)
 - The 6 sprite PNGs from the original repo (not redistributed here)
 
 ## Setup
