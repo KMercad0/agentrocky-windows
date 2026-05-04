@@ -1,50 +1,80 @@
 # agentrocky-windows
 
-An **unofficial** Windows port of [**agentrocky**](https://github.com/itmesneha/agentrocky)
-by [**@itmesneha**](https://github.com/itmesneha) — a desktop pixel-art companion
-that walks across your screen and talks to Claude Code from a retro terminal popover.
+> **Rocky:** Hello, friend! I am Rocky. Question, friend — you have Windows
+> computer? Good good good. I live there now. Walk on screen. Help with
+> work. Amaze!
+>
+> **Grace:** What Rocky's trying to say: this is an **unofficial Windows port**
+> of [**agentrocky**](https://github.com/itmesneha/agentrocky) by
+> [**@itmesneha**](https://github.com/itmesneha) — a desktop pixel-art
+> companion that walks across your screen and talks to Claude Code from a
+> retro terminal popover.
+>
+> **Rocky:** Grace make me sound like science project. I am friend. Fist my bump!
 
 > ⚠️ Community port. The original macOS/Swift app, the character "Rocky," and
-> **all sprite assets** are the work of **@itmesneha**. All credit for the concept,
-> art, and behaviors goes to her. This repo only re-implements the runtime on
-> Windows in Python + PyQt6, plus a few extras (voice, MCP assistant tools).
+> **all sprite assets** are the work of **@itmesneha**. All credit for the
+> concept, art, and behaviors goes to her. This repo only re-implements the
+> runtime on Windows in Python + PyQt6, plus a few extras (voice, MCP
+> assistant tools).
 >
 > Original repo: <https://github.com/itmesneha/agentrocky>
 
-## What it does
+## What Rocky does
 
-Rocky is Rocky, Our favorite buddy in the movie/book Project Hail Mary:
+> **Rocky:** I tell you! Things I do:
+>
+> - Walk on screen above taskbar. Bounce at edges. Sometimes break into
+>   jazz dance. *Amaze Amaze Amaze!*
+> - Click me — small green terminal pop up. We chat. I talk to Claude Code.
+> - Speech bubble when tool use, when task done. So you know what happen.
+> - Voice clips for events. Start, done, error. *Happy! Sad! Brain tired!*
+> - Four MCP tools so Claude help you: set reminder, take note, open file,
+>   launch app.
+> - Health check-ins! Every X minutes I ask: drink water, question?
+>   Stretch, question? Eye tired, question? *Caring friend!*
+>
+> **Grace:** Stream-json parsing for the chat output, color-coded by message
+> type. Speech bubbles fire on `tool_use` and turn-end events. The MCP
+> sidecar (`mcp_server.py`) exposes the four tools over stdio.
 
-- Walks across your screen above the taskbar, bounces at edges, breaks into jazz.
-- Pops a retro green-on-black terminal popover when you click him.
-- Talks to **Claude Code** through that terminal — color-coded assistant text,
-  tool calls, errors. Stream-json parsing.
-- Shows speech bubbles on tool use / turn end.
-- Plays Rocky voice clips on lifecycle events (start, done, error, idle, etc.). AMAZE AMAZE AMAZE
-- Exposes four MCP tools so Claude can set reminders, take notes, open URLs/files,
-  and launch whitelisted desktop apps.
+## Install — easy way (no Python)
 
-## Install (non-tech, no Python needed)
+> **Grace:** If you're not a developer, this is the path. Download a zip,
+> double-click one file, you're done.
+>
+> **Rocky:** I do hard work for you. You drink coffee. Good!
 
-Grab the latest zip from
-[**Releases**](https://github.com/KMercad0/agentrocky-windows/releases),
-unzip, double-click `setup.bat`. It installs the Claude CLI, logs you in,
-walks you through dropping the 6 sprite PNGs in. Done.
+1. Grab the latest zip from
+   [**Releases**](https://github.com/KMercad0/agentrocky-windows/releases).
+2. Unzip anywhere — Desktop is fine.
+3. Double-click **`setup.bat`** inside the unzipped folder.
 
-Full step-by-step + troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md).
+`setup.bat` installs the Claude CLI, signs you in, walks you through dropping
+the 6 sprite PNGs in, then launches Rocky.
+
+Full walk-through with screenshots-style detail and troubleshooting:
+[How-to-Run-rocky.md](./How-to-Run-rocky.md).
 
 ## Requirements
 
-- Windows 10 / 11
-- Python 3.10+ (only if running from source — release zip has its own runtime)
-- [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) installed and
-  authenticated (`claude login` once — `setup.bat` does this for you)
-- The 6 sprite PNGs from the original repo (not redistributed here)
+> **Rocky:** What you need before I come live with you?
 
-## Setup
+- Windows 10 or 11
+- Anthropic account (for `claude login`)
+- Node.js (only if you don't have it — `setup.bat` will tell you)
+- Python 3.10+ — only if running from source. Release zip has its own.
+- The 6 sprite PNGs from the original repo (not redistributed here — see
+  [Credits](#credits))
+
+## Run from source (developers)
+
+> **Grace:** Cloning the repo, classic dev workflow.
+>
+> **Rocky:** Words I do not understand. Continue.
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/KMercad0/agentrocky-windows
 cd agentrocky-windows
 
 pip install -r requirements.txt
@@ -66,23 +96,23 @@ sprites/jazz2.png
 sprites/jazz3.png
 ```
 
-Sprites are **not redistributed** here out of respect for the original author.
-
-## Run
+Run:
 
 ```bash
 pythonw rocky.py
 ```
 
-`pythonw.exe` hides the console. Right-click rocky (or the tray icon) for
-**Show Chat / Hide / Restart Claude / Voice / Pause Walk / Quit**.
+> **Rocky:** `pythonw.exe` hide console. No black box. Clean!
+>
+> **Grace:** Right-click Rocky (or the tray icon) for **Show Chat / Hide /
+> Restart Claude / Voice / Pause Walk / Quit**. Global hotkey **Ctrl+Alt+R**
+> summons the chat from anywhere.
 
-Global hotkey: **Ctrl+Alt+R** summons the chat from anywhere.
+## Build the exe yourself
 
-Prebuilt-exe route, source route, and troubleshooting:
-[How-to-Run-rocky.md](./How-to-Run-rocky.md).
-
-## Build (PyInstaller)
+> **Grace:** PyInstaller bundles everything into a self-contained folder.
+>
+> **Rocky:** I become tiny computer file. Travel anywhere.
 
 ```bash
 pyinstaller mcp_server.spec --noconfirm
@@ -101,21 +131,32 @@ dist/
 ```
 
 To distribute: copy `dist/mcp_server.exe` next to `dist/rocky/rocky.exe`,
-drop the 6 sprite PNGs into `dist/rocky/sprites/`, zip the `rocky/` folder.
+copy `setup.bat` next to it too, drop the 6 sprite PNGs into
+`dist/rocky/sprites/` *(skip the sprites if shipping a release zip — users
+fetch them via setup.bat)*, then zip the `rocky/` folder.
 
 `mcp_server.exe` must sit next to `rocky.exe`. The MCP config written at
 startup (`~/.agentrocky/mcp_config.json`) points `claude --mcp-config` at
 `Path(sys.executable).parent / "mcp_server.exe"`.
 
+> **Rocky:** *Bad Bad Bad* if you move rocky.exe away from `_internal\`!
+> Computer cry. Python DLL not load.
+>
+> **Grace:** Yeah. Keep the folder intact.
+
 The exe is **unsigned**. Windows SmartScreen will warn on first launch — click
 *More info → Run anyway*. Code signing is on the roadmap.
 
-Full step-by-step including troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md).
+Full step-by-step + troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md).
 
 ## Safety
 
-Rocky launches `claude` with `--dangerously-skip-permissions`. Claude can run
-shell commands, edit files, and call tools without per-action prompts.
+> **Grace:** This is the part I want you to actually read. Rocky launches
+> `claude` with `--dangerously-skip-permissions`. Claude can run shell
+> commands, edit files, and call tools without per-action prompts.
+>
+> **Rocky:** Big trust. Big responsibility. Like fistbump but with computer.
+
 Mitigations in this port:
 
 - Claude's cwd is sandboxed to `~/agentrocky-workspace/` (override with
@@ -128,9 +169,9 @@ Mitigations in this port:
 
 If you don't want autonomous tool execution, don't use this app.
 
-## Personal assistant tools (V3)
+## Personal assistant tools
 
-Rocky exposes four MCP tools that Claude calls from chat:
+> **Rocky:** Claude can ask me for help. I do four things:
 
 | Tool | What it does |
 |---|---|
@@ -139,11 +180,90 @@ Rocky exposes four MCP tools that Claude calls from chat:
 | `rocky.open` | Open URL or file inside the workspace |
 | `rocky.launch_app` | Spawn whitelisted app: notepad, calc, explorer, cmd, paint, wordpad, word, excel, powerpoint, outlook, chrome, edge, firefox |
 
-Reminders persist in `~/.agentrocky/reminders.json`. Missed-by-<1h fire on next
-launch; older drop. **Rocky must be running for reminders to fire** —
-schtasks integration is V3.5.
+> **Rocky:** Reminder live in `~/.agentrocky/reminders.json`. Miss by less
+> than one hour, I still fire next time you open me. Older — gone. *Sad sad
+> sad.*
+>
+> **Grace:** Schtasks integration for true persistence is V3.5 on the
+> roadmap.
+
+## Health check-ins
+
+> **Rocky:** Different from reminders. Reminder is one time — Claude tell me
+> *"poke human in 30 minute about stretch"*, I poke once, done. Health
+> check-in is **forever poke**. Every X minutes I check on you. Drink water,
+> question? Stretch, question? Look far thing, question?
+>
+> **Grace:** Local recurring nudges, no Claude involved. Five built-in
+> categories with sensible defaults; toggle them per-category from the tray
+> menu under **Health Check-ins**.
+
+| Category | Default interval | Jitter | Default state |
+|---|---|---|---|
+| `water`   | 60 min  | ±10 min | on  |
+| `stretch` | 90 min  | ±15 min | on  |
+| `eyes`    | 20 min  | ±5 min  | on  (20-20-20 rule) |
+| `posture` | 45 min  | ±10 min | off |
+| `mental`  | 120 min | ±20 min | on  |
+
+When a check-in fires:
+
+1. Native Win10/11 toast pops with the category copy (e.g. *"rocky thirsty.
+   human drink water, question?"*).
+2. Rocky plays a category-appropriate voice clip.
+3. A speech bubble shows on the sprite.
+
+> **Rocky:** I do not nag. Each category has *jitter* — small randomness so
+> I do not poke you at exactly the same minute every day. Less annoying.
+> *Good engineer.*
+
+### Configure
+
+- Tray icon → right-click → **Health Check-ins** submenu:
+  - **Master enable** — global on/off
+  - Per-category toggles (e.g. *Water (60m)* — click to flip)
+  - **Edit health.json…** — opens `~/.agentrocky/health.json` in your
+    default editor for fine-tuning intervals, jitter, and copy text
+
+### Config file
+
+`~/.agentrocky/health.json`:
+
+```json
+{
+  "enabled": true,
+  "categories": {
+    "water":   { "enabled": true,  "interval_min": 60,  "jitter_min": 10,
+                 "copy": "rocky thirsty. human drink water, question?" },
+    "stretch": { "enabled": true,  "interval_min": 90,  "jitter_min": 15,
+                 "copy": "rocky stiff. human stretch, question?" },
+    "eyes":    { "enabled": true,  "interval_min": 20,  "jitter_min": 5,
+                 "copy": "eye tired. human look far thing 20 second, question?" },
+    "posture": { "enabled": false, "interval_min": 45,  "jitter_min": 10,
+                 "copy": "rocky see slouch. human sit straight, question?" },
+    "mental":  { "enabled": true,  "interval_min": 120, "jitter_min": 20,
+                 "copy": "rocky check human mood. human ok, question?" }
+  }
+}
+```
+
+Edit, save — `QFileSystemWatcher` picks up the change live, no restart
+needed. Add your own categories the same way (just match the schema).
+
+> **Grace:** Reminders vs. health check-ins, quick mental model:
+>
+> | | Reminders | Health check-ins |
+> |---|---|---|
+> | Set by | Claude (via `rocky.reminder` MCP tool) | You — tray menu / config file |
+> | Fires | Once at a specific time | Recurring on interval |
+> | Stored in | `reminders.json` | `health.json` |
+> | Survives Rocky restart | Missed-by-<1h refire | Always (recomputes next fire) |
 
 ## Architecture
+
+> **Grace:** Quick map for anyone reading the code.
+>
+> **Rocky:** This is for science people. Skip if you just want me to walk.
 
 Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
 
@@ -168,6 +288,9 @@ Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
 
 ## Differences from the original
 
+> **Rocky:** Sneha original is Mac. I am Windows version. Different bones,
+> same heart.
+
 - Windows-native: PyQt6 instead of SwiftUI; tray icon + right-click menu for
   quit (no macOS app menu).
 - Single-instance lock via `QSharedMemory`.
@@ -182,6 +305,8 @@ follows the original spec.
 
 ## Credits
 
+> **Rocky:** Important. Listen.
+
 - **Original concept, character, art, and macOS app:**
   [@itmesneha](https://github.com/itmesneha) —
   <https://github.com/itmesneha/agentrocky>
@@ -193,8 +318,11 @@ follows the original spec.
   right-click rocky → **Voice**.
 - **Windows port:** this repo. Built with PyQt6.
 
-If you like the project, ⭐ the **original repo** first:
-<https://github.com/itmesneha/agentrocky>.
+> **Rocky:** If you like project, star **original repo first**:
+> <https://github.com/itmesneha/agentrocky>. Sneha make me. I am her work.
+> Respect.
+>
+> **Grace:** Yeah, what he said.
 
 ## License
 
@@ -202,3 +330,5 @@ Code in this repo: MIT (see `LICENSE`). **Sprite assets are not included** and
 remain under the original author's terms — fetch them from the upstream repo
 and follow her license. Voice clips under CC-BY-NC-4.0 (see
 `sounds/LICENSE-VOICE.md`).
+
+> **Rocky:** Now go. Install me. We work together. *Amaze Amaze Amaze!*
