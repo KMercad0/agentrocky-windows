@@ -30,7 +30,7 @@ else:
 
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QObject, pyqtSignal, QSize, QRectF, QSharedMemory,
-    QElapsedTimer, QFileSystemWatcher,
+    QElapsedTimer, QFileSystemWatcher, QAbstractNativeEventFilter,
 )
 from PyQt6.QtGui import (
     QPixmap, QTransform, QPainter, QColor, QFont, QFontDatabase,
@@ -38,15 +38,37 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QPushButton, QMessageBox,
+    QTextEdit, QLineEdit, QPlainTextEdit, QPushButton, QMessageBox,
     QSystemTrayIcon, QMenu,
 )
 
 
 # -- constants ----------------------------------------------------------------
 
-SPRITE_DIR = Path(__file__).parent / "sprites"
-SOUND_DIR = Path(__file__).parent / "sounds"
+def _bundle_dir() -> Path:
+    """Bundled-resource root. PyInstaller exposes _MEIPASS; source uses script dir."""
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+
+
+def _external_dir() -> Path:
+    """User-supplied resource root. Frozen: dir of .exe. Source: script dir."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+def resource_path(rel: str) -> Path:
+    """For files we ship (bundled into the exe via PyInstaller datas)."""
+    return _bundle_dir() / rel
+
+
+def external_path(rel: str) -> Path:
+    """For files the end-user drops next to the exe (e.g. sprites)."""
+    return _external_dir() / rel
+
+
+SPRITE_DIR = external_path("sprites")
+SOUND_DIR = resource_path("sounds")
 SPRITE_FILES = {
     "stand": "stand.png",
     "walk1": "walkleft1.png",
@@ -56,12 +78,12 @@ SPRITE_FILES = {
     "jazz3": "jazz3.png",
 }
 SPRITE_SIZE = 96
-WALK_SPEED_PX = 1.5            # per 16ms tick → ~90px/s
+WALK_SPEED_PX = 3.0            # per 33ms tick → ~90px/s
 TASKBAR_OFFSET = 50            # gap above bottom of screen
 JAZZ_DURATION_MS = 2400
 JAZZ_FRAME_MS = 150
 WALK_FRAME_MS = 125            # 8fps
-MOVE_TICK_MS = 16              # 60fps
+MOVE_TICK_MS = 33              # 30fps — halves idle wakeups vs 60fps
 BUBBLE_HIDE_MS = 3000
 IDLE_JAZZ_MIN_MS = 15000
 IDLE_JAZZ_MAX_MS = 45000
@@ -88,7 +110,8 @@ AUDIT_LOG = AUDIT_DIR / "audit.log"
 CRASH_LOG = AUDIT_DIR / "log.txt"
 REMINDERS_JSON = AUDIT_DIR / "reminders.json"
 MCP_CONFIG_JSON = AUDIT_DIR / "mcp_config.json"
-MCP_SERVER_PY = Path(__file__).parent / "mcp_server.py"
+MCP_SERVER_PY = resource_path("mcp_server.py")
+MCP_SERVER_EXE = Path(sys.executable).parent / "mcp_server.exe"
 HEALTH_JSON = AUDIT_DIR / "health.json"
 
 # Health check-in scheduler — local recurring nudges (water/stretch/eyes/etc.)
@@ -110,11 +133,17 @@ HEALTH_DEFAULT_CATS = {
 def _write_mcp_config() -> Path:
     """Write the local MCP config that points claude at our sidecar server."""
     AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    if getattr(sys, "frozen", False):
+        command = str(MCP_SERVER_EXE)
+        args: list[str] = []
+    else:
+        command = sys.executable
+        args = [str(MCP_SERVER_PY)]
     cfg = {
         "mcpServers": {
             "agentrocky": {
-                "command": sys.executable,
-                "args": [str(MCP_SERVER_PY)],
+                "command": command,
+                "args": args,
                 "env": {
                     "AGENTROCKY_CWD": str(WORKSPACE),
                 },
@@ -125,6 +154,24 @@ def _write_mcp_config() -> Path:
     return MCP_CONFIG_JSON
 
 
+LOG_MAX_BYTES = 5 * 1024 * 1024  # rotate audit.log / log.txt at 5MB → .1
+
+
+def _rotate_if_big(path: Path, max_bytes: int = LOG_MAX_BYTES) -> None:
+    """Single-generation rotation. If path > max_bytes → overwrite path.1, fresh file."""
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            backup = path.with_suffix(path.suffix + ".1")
+            try:
+                if backup.exists():
+                    backup.unlink()
+            except Exception:
+                pass
+            path.replace(backup)
+    except Exception:
+        pass
+
+
 def _install_excepthook() -> None:
     """Route unhandled exceptions to ~/.agentrocky/log.txt + a dialog."""
     import traceback
@@ -132,17 +179,21 @@ def _install_excepthook() -> None:
     def hook(etype, value, tb):
         try:
             AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+            _rotate_if_big(CRASH_LOG)
             with CRASH_LOG.open("a", encoding="utf-8") as f:
                 f.write(f"\n--- {datetime.now(timezone.utc).isoformat()} ---\n")
                 traceback.print_exception(etype, value, tb, file=f)
         except Exception:
             pass
+        # Marshal the dialog to the GUI thread — reader threads must not call
+        # QMessageBox directly. QTimer.singleShot(0, ...) posts to the main
+        # event loop. If no QApplication yet (very early crash), skip dialog.
         try:
-            QMessageBox.critical(
-                None,
-                "agentrocky crashed",
-                f"Unhandled error: {etype.__name__}: {value}\n\nLog: {CRASH_LOG}",
-            )
+            msg = f"Unhandled error: {etype.__name__}: {value}\n\nLog: {CRASH_LOG}"
+            if QApplication.instance() is not None:
+                QTimer.singleShot(0, lambda m=msg: QMessageBox.critical(
+                    None, "agentrocky crashed", m,
+                ))
         except Exception:
             pass
         sys.__excepthook__(etype, value, tb)
@@ -150,29 +201,74 @@ def _install_excepthook() -> None:
     sys.excepthook = hook
 
 
+_audit_buffer: list[str] = []
+_audit_lock = threading.Lock()
+_audit_flush_count = 0
+
+
 def audit(kind: str, payload) -> None:
+    """Buffered append. Real disk write happens in flush_audit (1s timer +
+    aboutToQuit final flush). Thread-safe — called from reader threads too."""
+    try:
+        line = json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": kind,
+            "data": payload,
+        }) + "\n"
+    except Exception:
+        return
+    with _audit_lock:
+        _audit_buffer.append(line)
+
+
+def flush_audit() -> None:
+    global _audit_flush_count
+    with _audit_lock:
+        if not _audit_buffer:
+            return
+        chunk = "".join(_audit_buffer)
+        _audit_buffer.clear()
     try:
         AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        if _audit_flush_count % 50 == 0:
+            _rotate_if_big(AUDIT_LOG)
+        _audit_flush_count += 1
         with AUDIT_LOG.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "kind": kind,
-                "data": payload,
-            }) + "\n")
+            f.write(chunk)
     except Exception:
         pass  # never let logging break the app
 
 
+_toast_notifier = None
+_toast_classes: tuple | None = None  # (ToastNotification, XmlDocument)
+_toast_disabled = False
+
+
 def show_toast(title: str, body: str) -> bool:
-    """Native Win10/11 toast. Returns False if winrt unavailable / fails."""
-    if sys.platform != "win32":
+    """Native Win10/11 toast. Returns False if winrt unavailable / fails.
+
+    Imports winrt lazily on first call, caches the notifier + classes so
+    subsequent calls skip the import dance.
+    """
+    global _toast_notifier, _toast_classes, _toast_disabled
+    if sys.platform != "win32" or _toast_disabled:
         return False
+    if _toast_notifier is None:
+        try:
+            from winrt.windows.ui.notifications import (
+                ToastNotification, ToastNotificationManager,
+            )
+            from winrt.windows.data.xml.dom import XmlDocument
+            _toast_classes = (ToastNotification, XmlDocument)
+            _toast_notifier = ToastNotificationManager.create_toast_notifier_with_id(
+                "agentrocky"
+            )
+        except Exception:
+            _toast_disabled = True
+            return False
     try:
         from html import escape
-        from winrt.windows.ui.notifications import (
-            ToastNotification, ToastNotificationManager,
-        )
-        from winrt.windows.data.xml.dom import XmlDocument
+        ToastNotification, XmlDocument = _toast_classes  # type: ignore[misc]
         xml = (
             "<toast><visual><binding template='ToastGeneric'>"
             f"<text>{escape(title)}</text>"
@@ -181,8 +277,7 @@ def show_toast(title: str, body: str) -> bool:
         )
         doc = XmlDocument()
         doc.load_xml(xml)
-        notifier = ToastNotificationManager.create_toast_notifier_with_id("agentrocky")
-        notifier.show(ToastNotification(doc))
+        _toast_notifier.show(ToastNotification(doc))
         return True
     except Exception:
         return False
@@ -259,9 +354,16 @@ class VoicePack:
             f = self.base / entry.get("file", "")
             if cat and f.exists():
                 self.by_category.setdefault(cat, []).append(f)
-                self.durations[f] = _wav_duration_ms(f)
+                # durations parsed lazily on first play (avoid startup wave-open per clip)
         if not self.by_category:
             self.enabled = False
+
+    def _duration_ms(self, clip: Path) -> int:
+        d = self.durations.get(clip)
+        if d is None:
+            d = _wav_duration_ms(clip)
+            self.durations[clip] = d
+        return d
 
     def play(self, category: str) -> None:
         if not self.enabled:
@@ -284,7 +386,7 @@ class VoicePack:
                                winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:
             return  # never let audio break the app
-        self._busy_until_ms = now + self.durations.get(clip, 1500)
+        self._busy_until_ms = now + self._duration_ms(clip)
         self._current_priority = pri
 
     def stop(self) -> None:
@@ -449,6 +551,11 @@ class ClaudeSession(QObject):
 
     def is_alive(self) -> bool:
         return bool(self.proc and self.proc.poll() is None and self.proc.stdin)
+
+    def reset_usage(self) -> None:
+        for k in self._usage_total:
+            self._usage_total[k] = 0
+        self.usage_updated.emit(dict(self._usage_total))
 
     def send(self, prompt: str) -> None:
         if not self.is_alive():
@@ -623,39 +730,86 @@ class ChatHeader(QWidget):
         self._drag_offset = None
 
 
-class HistoryLineEdit(QLineEdit):
-    """QLineEdit with shell-style Up/Down history."""
+class HistoryLineEdit(QPlainTextEdit):
+    """Multi-line input with shell-style Up/Down history.
+
+    Enter submits; Shift+Enter inserts a newline. Up/Down nav history when
+    cursor is on the first/last visual line (mirrors zsh/fish behaviour).
+    Auto-grows up to MAX_LINES, then scrolls.
+    """
+
+    HISTORY_CAP = 500
+    MAX_LINES = 6
+    submitted = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._history: list[str] = []
-        self._idx: int | None = None  # None = editing fresh line
+        self._idx: int | None = None
         self._draft = ""
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setTabChangesFocus(True)
+        self.document().contentsChanged.connect(self._fit_height)
+        self._fit_height()
+
+    # --- API parity with prior QLineEdit-based version ---
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, value: str) -> None:  # noqa: N802
+        self.setPlainText(value)
+        self.moveCursor(QTextCursor.MoveOperation.End)
+
+    def clear(self) -> None:
+        self.setPlainText("")
 
     def push(self, text: str) -> None:
         if text and (not self._history or self._history[-1] != text):
             self._history.append(text)
+            if len(self._history) > self.HISTORY_CAP:
+                del self._history[: len(self._history) - self.HISTORY_CAP]
         self._idx = None
         self._draft = ""
 
+    # --- key handling ---
     def keyPressEvent(self, ev) -> None:  # noqa: N802
-        if ev.key() == Qt.Key.Key_Up and self._history:
-            if self._idx is None:
-                self._draft = self.text()
-                self._idx = len(self._history) - 1
-            elif self._idx > 0:
-                self._idx -= 1
-            self.setText(self._history[self._idx])
+        key = ev.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                super().keyPressEvent(ev)
+                return
+            self.submitted.emit()
             return
-        if ev.key() == Qt.Key.Key_Down and self._idx is not None:
-            if self._idx < len(self._history) - 1:
-                self._idx += 1
+        if key == Qt.Key.Key_Up and self._history:
+            cur = self.textCursor()
+            if cur.blockNumber() == 0:
+                if self._idx is None:
+                    self._draft = self.toPlainText()
+                    self._idx = len(self._history) - 1
+                elif self._idx > 0:
+                    self._idx -= 1
                 self.setText(self._history[self._idx])
-            else:
-                self._idx = None
-                self.setText(self._draft)
-            return
+                return
+        if key == Qt.Key.Key_Down and self._idx is not None:
+            cur = self.textCursor()
+            if cur.blockNumber() == self.document().blockCount() - 1:
+                if self._idx < len(self._history) - 1:
+                    self._idx += 1
+                    self.setText(self._history[self._idx])
+                else:
+                    self._idx = None
+                    self.setText(self._draft)
+                return
         super().keyPressEvent(ev)
+
+    def _fit_height(self) -> None:
+        fm = self.fontMetrics()
+        line_h = fm.lineSpacing()
+        n = max(1, min(self.MAX_LINES, self.document().blockCount()))
+        # padding ~6px top + bottom
+        self.setFixedHeight(line_h * n + 10)
 
 
 class ChatWindow(QWidget):
@@ -709,9 +863,10 @@ class ChatWindow(QWidget):
         self.input = HistoryLineEdit()
         self.input.setFont(mono_font(11))
         self.input.setStyleSheet(
-            f"QLineEdit{{background:transparent;color:{COLOR_TEXT};border:none;}}"
+            f"QPlainTextEdit{{background:transparent;color:{COLOR_TEXT};"
+            f"border:none;}}"
         )
-        self.input.returnPressed.connect(self._on_submit)
+        self.input.submitted.connect(self._on_submit)
         bar_lay.addWidget(self.input, 1)
         root.addWidget(bar)
 
@@ -719,6 +874,12 @@ class ChatWindow(QWidget):
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._blink)
         self._blink_state = True
+
+        # batched line append — coalesce streamed lines, flush via 50ms timer
+        self._pending_html: list[str] = []
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.timeout.connect(self._flush_lines)
 
     def set_running(self, running: bool) -> None:
         self._is_running = running
@@ -749,6 +910,8 @@ class ChatWindow(QWidget):
             self.hide()
             return
         if ev.key() == Qt.Key.Key_L and ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._pending_html.clear()
+            self._flush_timer.stop()
             self.output.clear()
             return
         super().keyPressEvent(ev)
@@ -761,8 +924,23 @@ class ChatWindow(QWidget):
         # escape minimal HTML
         safe = (text.replace("&", "&amp;").replace("<", "&lt;")
                     .replace(">", "&gt;").replace("\n", "<br>"))
-        self.output.append(f'<span style="color:{color};">{safe}</span>')
-        self.output.moveCursor(QTextCursor.MoveOperation.End)
+        self._pending_html.append(f'<div style="color:{color};">{safe}</div>')
+        if not self._flush_timer.isActive():
+            self._flush_timer.start(50)
+
+    def _flush_lines(self) -> None:
+        if not self._pending_html:
+            return
+        # only follow tail if user already at bottom — don't yank mid-scroll
+        sb = self.output.verticalScrollBar()
+        at_bottom = sb.value() >= sb.maximum() - 4
+        cursor = self.output.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml("".join(self._pending_html))
+        self._pending_html.clear()
+        if at_bottom:
+            self.output.moveCursor(QTextCursor.MoveOperation.End)
+            sb.setValue(sb.maximum())
 
     def _on_submit(self) -> None:
         text = self.input.text().strip()
@@ -845,6 +1023,7 @@ class Rocky(QWidget):
         self._press_pos: QPoint | None = None
         self._health_active = False
         self._health_category: str | None = None
+        self._paused = False  # user toggle — stop walk + idle, snap to stand
 
         self.move(int(self.pos_x), int(self.pos_y))
 
@@ -884,13 +1063,12 @@ class Rocky(QWidget):
         self.idle_timer.timeout.connect(self._idle_tick)
         self._schedule_idle()
 
-        # lock-screen detection (Win32 only) — poll every 3s
+        # lock-screen detection — event-driven via WTSRegisterSessionNotification
+        # (registered in showEvent once HWND is valid). Poll fallback removed.
         self._was_locked = False
         self._was_visible_pre_lock = True
-        if sys.platform == "win32":
-            self.lock_timer = QTimer(self)
-            self.lock_timer.timeout.connect(self._tick_lock_state)
-            self.lock_timer.start(3000)
+        self._wts_registered = False
+        self._msg_struct = None
 
         self._render()
 
@@ -898,6 +1076,7 @@ class Rocky(QWidget):
         super().showEvent(ev)
         if sys.platform == "win32":
             self._strip_win32_border()
+            self._register_session_notification()
 
     def _strip_win32_border(self) -> None:
         try:
@@ -958,8 +1137,11 @@ class Rocky(QWidget):
 
     def _load_sprites(self) -> None:
         # render at native pixel density so sprites stay crisp on 4K / 200% scaling
-        screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = (getattr(self, "_qscreen", None)
+                  or QGuiApplication.screenAt(QCursor.pos())
+                  or QApplication.primaryScreen())
         dpr = screen.devicePixelRatio() if screen else 1.0
+        self._sprite_dpr = dpr
         target = max(1, int(round(SPRITE_SIZE * dpr)))
         for key, fname in SPRITE_FILES.items():
             path = SPRITE_DIR / fname
@@ -996,7 +1178,7 @@ class Rocky(QWidget):
 
     # -- timers --
     def _tick_move(self) -> None:
-        if self.is_chat_open or self.is_jazzing:
+        if self.is_chat_open or self.is_jazzing or self._paused:
             return
         self.pos_x += WALK_SPEED_PX * self.direction
         scr = self._screen
@@ -1009,7 +1191,7 @@ class Rocky(QWidget):
         self.move(int(self.pos_x), int(self.pos_y))
 
     def _tick_walk_frame(self) -> None:
-        if self.is_jazzing or self.is_chat_open:
+        if self.is_jazzing or self.is_chat_open or self._paused:
             return
         self.walk_frame ^= 1
         self._render()
@@ -1037,9 +1219,31 @@ class Rocky(QWidget):
 
     def _idle_tick(self) -> None:
         if (not self.is_chat_open and not self.is_jazzing
-                and not self._health_active):
+                and not self._health_active and not self._paused):
             self._start_jazz()
         self._schedule_idle()
+
+    def set_paused(self, on: bool) -> None:
+        if on == self._paused:
+            return
+        self._paused = on
+        if on:
+            self.move_timer.stop()
+            self.walk_timer.stop()
+            self.idle_timer.stop()
+            if self.is_jazzing:
+                self.jazz_timer.stop()
+                self.jazz_stop_timer.stop()
+                self.is_jazzing = False
+            self.walk_frame = 0
+            self._render()
+        else:
+            if not self.is_chat_open:
+                self.move_timer.start(MOVE_TICK_MS)
+                self.walk_timer.start(WALK_FRAME_MS)
+                self._schedule_idle()
+        if hasattr(self, "_tray_pause_action") and self._tray_pause_action is not None:
+            self._tray_pause_action.setChecked(on)
 
     # -- bubble --
     def _show_bubble(self, text: str) -> None:
@@ -1073,7 +1277,7 @@ class Rocky(QWidget):
         self.bubble.dismiss()
         self._health_active = False
         self._health_category = None
-        if not self.is_chat_open:
+        if not self.is_chat_open and not self._paused:
             self.move_timer.start(MOVE_TICK_MS)
             self.walk_timer.start(WALK_FRAME_MS)
             self._schedule_idle()
@@ -1132,31 +1336,41 @@ class Rocky(QWidget):
         """Tear down and respawn the claude subprocess."""
         self.chat.append_line("[restarting claude…]", "system")
         self.session.stop()
+        self.session.reset_usage()
         self._claude_ready = False
         if hasattr(self, "_tray") and self._tray is not None:
             self._tray.setToolTip("agentrocky — starting…")
         self.session.start()
 
-    # -- lock screen --
-    @staticmethod
-    def _is_workstation_locked() -> bool:
-        """True if Windows workstation is locked. Uses OpenInputDesktop heuristic."""
-        if sys.platform != "win32":
-            return False
+    # -- lock screen (event-driven via WTSRegisterSessionNotification) --
+    _WM_WTSSESSION_CHANGE = 0x02B1
+    _WTS_SESSION_LOCK = 0x7
+    _WTS_SESSION_UNLOCK = 0x8
+
+    def _register_session_notification(self) -> None:
+        if self._wts_registered or sys.platform != "win32":
+            return
         try:
             import ctypes
-            user32 = ctypes.windll.user32
-            DESKTOP_SWITCHDESKTOP = 0x0100
-            h = user32.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
-            if not h:
-                return True
-            user32.CloseDesktop(h)
-            return False
+            self._msg_struct = _make_msg_struct()
+            hwnd = int(self.winId())
+            ok = ctypes.windll.wtsapi32.WTSRegisterSessionNotification(hwnd, 0)
+            self._wts_registered = bool(ok)
         except Exception:
-            return False
+            self._wts_registered = False
 
-    def _tick_lock_state(self) -> None:
-        locked = self._is_workstation_locked()
+    def _unregister_session_notification(self) -> None:
+        if not self._wts_registered:
+            return
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(hwnd)
+        except Exception:
+            pass
+        self._wts_registered = False
+
+    def _handle_lock_state(self, locked: bool) -> None:
         if locked and not self._was_locked:
             self._was_locked = True
             self._was_visible_pre_lock = self.isVisible()
@@ -1170,6 +1384,26 @@ class Rocky(QWidget):
             if self._was_visible_pre_lock:
                 self.show()
 
+    def nativeEvent(self, eventType, message):  # noqa: N802
+        if (sys.platform == "win32" and self._msg_struct is not None
+                and eventType in ("windows_generic_MSG", b"windows_generic_MSG")):
+            try:
+                m = self._msg_struct.from_address(int(message))
+                if m.message == self._WM_WTSSESSION_CHANGE:
+                    if m.wParam == self._WTS_SESSION_LOCK:
+                        self._handle_lock_state(True)
+                    elif m.wParam == self._WTS_SESSION_UNLOCK:
+                        self._handle_lock_state(False)
+            except Exception:
+                pass
+        # Don't chain to super() — QWidget.nativeEvent under PyQt6 6.11 +
+        # Python 3.14 segfaults during early window-creation messages.
+        return False, 0
+
+    def closeEvent(self, ev):  # noqa: N802
+        self._unregister_session_notification()
+        super().closeEvent(ev)
+
     # -- multi-monitor / DPI changes --
     def _on_screen_changed(self, *_args) -> None:
         scr = self._qscreen.availableGeometry()
@@ -1178,6 +1412,14 @@ class Rocky(QWidget):
         self.pos_x = max(scr.left(), min(self.pos_x, scr.right() - SPRITE_SIZE))
         self.pos_y = scr.bottom() - TASKBAR_OFFSET - SPRITE_SIZE
         self.move(int(self.pos_x), int(self.pos_y))
+        # reload sprites if DPR changed (different scaling factor on this monitor)
+        new_dpr = self._qscreen.devicePixelRatio() if self._qscreen else 1.0
+        if abs(new_dpr - getattr(self, "_sprite_dpr", 1.0)) > 1e-6:
+            try:
+                self._load_sprites()
+                self._render()
+            except Exception:
+                pass
 
     # -- mouse: click rocky toggles chat (drag suppression on tiny mouse moves) --
     def mousePressEvent(self, ev) -> None:  # noqa: N802
@@ -1195,6 +1437,8 @@ class Rocky(QWidget):
         voice_action = m.addAction(voice_label)
         voice_action.setEnabled(bool(self.voice.by_category))
         voice_action.triggered.connect(self._toggle_voice)
+        pause_action = m.addAction(f"Pause Walk: {'On' if self._paused else 'Off'}")
+        pause_action.triggered.connect(lambda: self.set_paused(not self._paused))
         m.addSeparator()
         m.addAction("Hide Rocky", self.hide)
         m.addAction("Quit", QApplication.instance().quit)
@@ -1221,10 +1465,11 @@ class Rocky(QWidget):
         if self.is_chat_open:
             self.chat.hide()
             self.is_chat_open = False
-            # resume motion
-            self.move_timer.start(MOVE_TICK_MS)
-            self.walk_timer.start(WALK_FRAME_MS)
-            self._schedule_idle()
+            # resume motion (unless user paused walking)
+            if not self._paused:
+                self.move_timer.start(MOVE_TICK_MS)
+                self.walk_timer.start(WALK_FRAME_MS)
+                self._schedule_idle()
         else:
             # anchor near rocky, above him; clamp into screen
             scr = self._screen
@@ -1257,6 +1502,8 @@ class ReminderManager(QObject):
 
     GRACE_SEC = 3600  # missed-by < 1h fires immediately on relaunch
 
+    fired = pyqtSignal(str, str)  # category="reminder", text — drives Rocky.show_health_check
+
     def __init__(self, voice: "VoicePack",
                  tray: QSystemTrayIcon | None,
                  parent: QObject | None = None) -> None:
@@ -1270,12 +1517,23 @@ class ReminderManager(QObject):
         self._watcher = QFileSystemWatcher(self)
         self._watcher.addPath(str(REMINDERS_JSON))
         self._watcher.addPath(str(REMINDERS_JSON.parent))
-        self._watcher.fileChanged.connect(self._on_change)
-        self._watcher.directoryChanged.connect(self._on_change)
+        self._watcher.fileChanged.connect(self._on_file_change)
+        self._watcher.directoryChanged.connect(self._on_dir_change)
         QTimer.singleShot(0, self._reload)
 
-    def _on_change(self, _path: str) -> None:
-        # debounce: rapid sequential writes settle before reload
+    def _on_file_change(self, _path: str) -> None:
+        QTimer.singleShot(150, self._reload)
+
+    def _on_dir_change(self, _path: str) -> None:
+        # Dir watcher fires for any sibling write (audit.log etc.). Skip unless
+        # reminders.json mtime actually moved.
+        try:
+            mtime = REMINDERS_JSON.stat().st_mtime_ns
+        except Exception:
+            return
+        if getattr(self, "_last_mtime", 0) == mtime:
+            return
+        self._last_mtime = mtime
         QTimer.singleShot(150, self._reload)
 
     def _reload(self) -> None:
@@ -1311,11 +1569,10 @@ class ReminderManager(QObject):
                     self._fire(e)
                 changed = True
                 continue
-            ms = int(min(delta * 1000, 2_147_483_000))
             t = QTimer(self)
             t.setSingleShot(True)
-            t.timeout.connect(lambda eid=rid: self._fire_by_id(eid))
-            t.start(ms)
+            t.timeout.connect(lambda eid=rid: self._on_timer_due(eid))
+            self._arm_timer(t, delta * 1000)
             self._scheduled[rid] = (t, e)
             kept.append(e)
         if changed:
@@ -1323,6 +1580,32 @@ class ReminderManager(QObject):
                 REMINDERS_JSON.write_text(json.dumps(kept, indent=2), "utf-8")
             except Exception:
                 pass
+
+    # QTimer interval is signed int32 ms (~24.8 days). Re-arm in chunks for
+    # longer delays.
+    TIMER_MAX_MS = 2_147_483_000
+
+    def _arm_timer(self, t: QTimer, remaining_ms: float) -> None:
+        ms = int(max(0, min(remaining_ms, self.TIMER_MAX_MS)))
+        t.start(ms)
+
+    def _on_timer_due(self, rid: str) -> None:
+        pair = self._scheduled.get(rid)
+        if pair is None:
+            return
+        t, entry = pair
+        try:
+            fire_at = datetime.fromisoformat(entry["fire_at"])
+            if fire_at.tzinfo is None:
+                fire_at = fire_at.replace(tzinfo=timezone.utc)
+        except Exception:
+            self._scheduled.pop(rid, None)
+            return
+        remaining = (fire_at - datetime.now(timezone.utc)).total_seconds() * 1000
+        if remaining > 1000:  # still in the future — chain
+            self._arm_timer(t, remaining)
+            return
+        self._fire_by_id(rid)
 
     def _fire_by_id(self, rid: str) -> None:
         pair = self._scheduled.pop(rid, None)
@@ -1353,6 +1636,7 @@ class ReminderManager(QObject):
         except Exception:
             pass
         audit("reminder_fire", {"id": entry.get("id"), "text": text})
+        self.fired.emit("reminder", text)
 
 
 class HealthCheckManager(QObject):
@@ -1381,12 +1665,22 @@ class HealthCheckManager(QObject):
         self._watcher = QFileSystemWatcher(self)
         self._watcher.addPath(str(HEALTH_JSON))
         self._watcher.addPath(str(HEALTH_JSON.parent))
-        self._watcher.fileChanged.connect(self._on_change)
-        self._watcher.directoryChanged.connect(self._on_change)
+        self._watcher.fileChanged.connect(self._on_file_change)
+        self._watcher.directoryChanged.connect(self._on_dir_change)
         QTimer.singleShot(0, self._tick)  # immediate check on launch
 
-    def _on_change(self, _path: str) -> None:
-        # debounce: rapid sequential writes settle before reload
+    def _on_file_change(self, _path: str) -> None:
+        QTimer.singleShot(150, self._reload)
+
+    def _on_dir_change(self, _path: str) -> None:
+        # Dir watcher fires for any sibling write. Skip unless health.json mtime moved.
+        try:
+            mtime = HEALTH_JSON.stat().st_mtime_ns
+        except Exception:
+            return
+        if getattr(self, "_last_mtime", 0) == mtime:
+            return
+        self._last_mtime = mtime
         QTimer.singleShot(150, self._reload)
 
     def _reload(self) -> None:
@@ -1589,12 +1883,19 @@ def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
     menu.addAction("Open Workspace", lambda: os.startfile(str(WORKSPACE)))
     menu.addAction("Open Audit Log", lambda: os.startfile(str(AUDIT_LOG))
                    if AUDIT_LOG.exists() else None)
+    menu.addAction("Open Crash Log", lambda: os.startfile(str(CRASH_LOG))
+                   if CRASH_LOG.exists() else None)
     menu.addSeparator()
     voice_label = f"Voice: {'On' if rocky.voice.enabled else 'Off'}"
     voice_action = menu.addAction(voice_label)
     voice_action.setEnabled(bool(rocky.voice.by_category))
     voice_action.triggered.connect(rocky._toggle_voice)
     rocky._tray_voice_action = voice_action
+    pause_action = menu.addAction("Pause Walk")
+    pause_action.setCheckable(True)
+    pause_action.setChecked(rocky._paused)
+    pause_action.toggled.connect(rocky.set_paused)
+    rocky._tray_pause_action = pause_action
     menu.addSeparator()
     quit_action = menu.addAction("Quit")
     quit_action.triggered.connect(app.quit)
@@ -1607,7 +1908,96 @@ def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
     return tray
 
 
+class _MSG(object):
+    """Lightweight ctypes MSG view — only fields we read."""
+
+
+def _make_msg_struct():
+    import ctypes
+    class MSG(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", ctypes.c_void_p),
+            ("message", ctypes.c_uint),
+            ("wParam", ctypes.c_ssize_t),
+            ("lParam", ctypes.c_ssize_t),
+            ("time", ctypes.c_uint),
+            ("pt_x", ctypes.c_long),
+            ("pt_y", ctypes.c_long),
+        ]
+    return MSG
+
+
+_HOTKEY_ID = 0xB001
+_WM_HOTKEY = 0x0312
+_MOD_ALT = 0x0001
+_MOD_CONTROL = 0x0002
+_MOD_NOREPEAT = 0x4000
+_VK_R = 0x52
+
+
+class GlobalHotkey(QObject, QAbstractNativeEventFilter):
+    """Win32 RegisterHotKey wrapper. Emits `triggered` on Ctrl+Alt+R."""
+
+    triggered = pyqtSignal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        QObject.__init__(self, parent)
+        QAbstractNativeEventFilter.__init__(self)
+        self._registered = False
+        self._msg_struct = None
+
+    def register(self) -> bool:
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            self._msg_struct = _make_msg_struct()
+            ok = ctypes.windll.user32.RegisterHotKey(
+                None, _HOTKEY_ID,
+                _MOD_CONTROL | _MOD_ALT | _MOD_NOREPEAT, _VK_R,
+            )
+            self._registered = bool(ok)
+        except Exception:
+            self._registered = False
+        return self._registered
+
+    def unregister(self) -> None:
+        if not self._registered:
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.UnregisterHotKey(None, _HOTKEY_ID)
+        except Exception:
+            pass
+        self._registered = False
+
+    def nativeEventFilter(self, eventType, message):  # noqa: N802
+        if not self._registered or self._msg_struct is None:
+            return False, 0
+        try:
+            if eventType in ("windows_generic_MSG", b"windows_generic_MSG"):
+                msg = self._msg_struct.from_address(int(message))
+                if msg.message == _WM_HOTKEY and msg.wParam == _HOTKEY_ID:
+                    self.triggered.emit()
+                    return True, 0
+        except Exception:
+            pass
+        return False, 0
+
+
+def _set_app_user_model_id() -> None:
+    """Win32 AUMID — toasts + taskbar group under 'agentrocky', not 'python.exe'."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("agentrocky.app")
+    except Exception:
+        pass
+
+
 def main() -> int:
+    _set_app_user_model_id()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     _install_excepthook()
@@ -1627,7 +2017,10 @@ def main() -> int:
         return 1
 
     # write MCP config so claude can call rocky tools (reminder/note/open/launch)
-    if MCP_SERVER_PY.exists():
+    # frozen build → check sibling mcp_server.exe; source → check mcp_server.py
+    mcp_available = (MCP_SERVER_EXE.exists() if getattr(sys, "frozen", False)
+                     else MCP_SERVER_PY.exists())
+    if mcp_available:
         try:
             _write_mcp_config()
         except Exception as e:
@@ -1635,12 +2028,28 @@ def main() -> int:
 
     missing = [f for f in SPRITE_FILES.values() if not (SPRITE_DIR / f).exists()]
     if missing:
-        QMessageBox.critical(
-            None, "agentrocky",
-            "Missing sprite files in ./sprites/:\n  " + "\n  ".join(missing)
+        try:
+            SPRITE_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        box = QMessageBox(None)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("agentrocky")
+        box.setText("Missing sprite files in ./sprites/:")
+        box.setInformativeText(
+            "  " + "\n  ".join(missing)
             + "\n\nCopy them from https://github.com/itmesneha/agentrocky "
-              "(agentrocky/Assets.xcassets).",
+              "(agentrocky/Assets.xcassets).\n\n"
+              f"Sprite folder: {SPRITE_DIR}"
         )
+        open_btn = box.addButton("Open Sprite Folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            try:
+                os.startfile(str(SPRITE_DIR))
+            except Exception:
+                pass
         return 1
 
     session = ClaudeSession()
@@ -1653,6 +2062,7 @@ def main() -> int:
 
     # reminder scheduler — watches reminders.json, fires QTimer + toast + voice
     reminders = ReminderManager(rocky.voice, tray)
+    reminders.fired.connect(rocky.show_health_check)
     app._agentrocky_reminders = reminders  # keep reference alive
 
     # health check-ins — recurring local nudges (water/stretch/eyes/etc.)
@@ -1662,9 +2072,24 @@ def main() -> int:
     if tray is not None:
         _attach_health_menu(tray, health)
 
+    # global hotkey Ctrl+Alt+R → show chat (Win32 only)
+    hotkey = GlobalHotkey()
+    if hotkey.register():
+        app.installNativeEventFilter(hotkey)
+        hotkey.triggered.connect(rocky.show_chat)
+        app.aboutToQuit.connect(hotkey.unregister)
+    app._agentrocky_hotkey = hotkey  # keep reference alive
+
+    # buffered audit log: 1s flush timer + final flush on quit
+    audit_timer = QTimer()
+    audit_timer.timeout.connect(flush_audit)
+    audit_timer.start(1000)
+    app._agentrocky_audit_timer = audit_timer  # keep reference alive
+
     # clean shutdown of claude subprocess + audio
     app.aboutToQuit.connect(session.stop)
     app.aboutToQuit.connect(rocky.voice.stop)
+    app.aboutToQuit.connect(flush_audit)
 
     session.start()
     return app.exec()
