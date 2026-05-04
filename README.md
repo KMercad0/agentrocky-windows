@@ -66,7 +66,42 @@ pythonw rocky.py
 ```
 
 `pythonw.exe` hides the console. Right-click rocky (or the tray icon) for
-**Show Chat / Hide / Restart Claude / Voice / Quit**.
+**Show Chat / Hide / Restart Claude / Voice / Pause Walk / Quit**.
+
+Global hotkey: **Ctrl+Alt+R** summons the chat from anywhere.
+
+Prebuilt-exe route, source route, and troubleshooting:
+[How-to-Run-rocky.md](./How-to-Run-rocky.md).
+
+## Build (PyInstaller)
+
+```bash
+pyinstaller mcp_server.spec --noconfirm
+pyinstaller rocky.spec --noconfirm
+```
+
+Output layout — onedir for `rocky` (cold start ~3-5× faster than onefile),
+onefile for the MCP sidecar:
+
+```
+dist/
+  mcp_server.exe          ← onefile sidecar (~21 MB)
+  rocky/
+    rocky.exe             ← launcher (~3 MB)
+    _internal/...         ← Qt + Python runtime (~99 MB)
+```
+
+To distribute: copy `dist/mcp_server.exe` next to `dist/rocky/rocky.exe`,
+drop the 6 sprite PNGs into `dist/rocky/sprites/`, zip the `rocky/` folder.
+
+`mcp_server.exe` must sit next to `rocky.exe`. The MCP config written at
+startup (`~/.agentrocky/mcp_config.json`) points `claude --mcp-config` at
+`Path(sys.executable).parent / "mcp_server.exe"`.
+
+The exe is **unsigned**. Windows SmartScreen will warn on first launch — click
+*More info → Run anyway*. Code signing is on the roadmap.
+
+Full step-by-step including troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md).
 
 ## Safety
 
@@ -103,7 +138,7 @@ schtasks integration is V3.5.
 
 Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
 
-- **`Rocky`** — frameless transparent always-on-top widget; 60 fps move + 8 fps
+- **`Rocky`** — frameless transparent always-on-top widget; 30 fps move + 8 fps
   walk-cycle timers.
 - **`ChatWindow`** — frameless dark popover, `QTextEdit` output + `QLineEdit`
   input, draggable header, ↑/↓ history, Esc to close, Ctrl+L to clear, token
@@ -154,7 +189,7 @@ If you like the project, ⭐ the **original repo** first:
 
 ## License
 
-Code in this repo: see `LICENSE` (matching the original repo's
-license). **Sprite assets are not included** and remain under the original
-author's terms — fetch them from the upstream repo and follow her license.
-Voice clips under CC-BY-NC-4.0 (see `sounds/LICENSE-VOICE.md`).
+Code in this repo: MIT (see `LICENSE`). **Sprite assets are not included** and
+remain under the original author's terms — fetch them from the upstream repo
+and follow her license. Voice clips under CC-BY-NC-4.0 (see
+`sounds/LICENSE-VOICE.md`).
