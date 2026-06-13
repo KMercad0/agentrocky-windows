@@ -61,11 +61,29 @@ Full walk-through with screenshots-style detail and troubleshooting:
 > **Rocky:** What you need before I come live with you?
 
 - Windows 10 or 11
-- Anthropic account (for `claude login`)
-- Node.js (only if you don't have it — `setup.bat` will tell you)
-- Python 3.10+ — only if running from source. Release zip has its own.
 - The 6 sprite PNGs from the original repo (not redistributed here — see
   [Credits](#credits))
+- Python 3.10+ — only if running from source. Release zip has its own.
+- **Optional** — an AI backend if you want to chat with Rocky (see
+  [Backends](#backends)). Without one, Rocky still walks and nags you to drink
+  water. Anthropic account + Node.js are only needed for the Claude backend.
+
+## Backends
+
+> **Rocky:** Who put words in rocky brain? You choose.
+
+Rocky talks to an AI backend, picked from the tray menu (right-click the tray
+icon ▸ **Backend**). Your choice is remembered in
+`~/.agentrocky/settings.json`.
+
+| Backend | Needs | What you get |
+|---|---|---|
+| **None** | nothing | Rocky just walks + health check-ins. Fully usable, zero setup. |
+| **Claude** | Node.js + `claude login` (Anthropic account) | Full agent: chat, file tools, reminders, app launching. |
+| **Gemini** | — | Stub for now ("coming soon"). Reserved for a future free-tier option. |
+
+First launch auto-picks **Claude** if the `claude` CLI is installed, otherwise
+**None**. Switch any time from the tray.
 
 ## Run from source (developers)
 

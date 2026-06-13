@@ -1,16 +1,62 @@
-# Other Models Integration (parked)
+# Other Models Integration
 
-Future work. Not part of the .exe packaging milestone. Default backend stays
-`claude` (Anthropic CLI). Goal: add a free-tier alternative so users without a
-Claude subscription can run Rocky.
+Goal: let users without a Claude subscription run Rocky.
 
-## Decision
+## Status (shipped)
 
-**Path 1 — Gemini CLI** (`@google/gemini-cli`).
+The provider abstraction is in, and **all three backends now run**. Each
+`_ProviderStrategy` owns its own process lifecycle and stream parsing; the host
+(`AgentSession`) just forwards `start`/`send`/`stop` and aggregates usage. Chosen
+from the tray "Backend" submenu, persisted to `~/.agentrocky/settings.json`:
+
+- **none** — standalone walker + health check-ins, no LLM. First-launch default
+  when `claude` is not on PATH (auto-detected by `load_provider`).
+- **claude** — `ClaudeStrategy`: one persistent stream-json subprocess (stdin
+  per turn) + MCP tools + skip-permissions opt-in dialog.
+- **gemini** — `GeminiStrategy`: **live** via the Gemini CLI (Path 1 below).
+
+Switching is `AgentSession.set_provider()` → stop → swap strategy → start; the
+signal contract is constant so `Rocky` never re-wires.
+
+### How Gemini runs (shipped)
+
+Unlike Claude's persistent stdin stream, the Gemini CLI runs **one-shot per
+turn**, so `GeminiStrategy.send()` spawns a fresh process each turn:
+
+```
+gemini --output-format stream-json --skip-trust --approval-mode yolo [--resume latest] -p PROMPT
+```
+
+- `--resume latest` carries conversation state across turns (omitted on the
+  first turn — `_first` flips to `False` only after a turn that produced a
+  `result`, so a failed first turn doesn't poison turn 2).
+- `--approval-mode yolo` is the Gemini equivalent of
+  `--dangerously-skip-permissions`, so the opt-in warning dialog fires for it
+  too (`supports_dangerous_opt_in = True`).
+- Stream schema differs from Claude — parsed in `GeminiStrategy._run`:
+  `{type:"message", role:"assistant", content, delta}` (delta chunks
+  accumulated, flushed on a non-delta message / tool / result),
+  `{type:"tool_use", tool_name}`, `{type:"result"}` (no `usage`, so the token
+  counter shows `0`).
+- stderr is drained on a side thread (avoids pipe deadlock) and surfaced as an
+  `error` line only when the turn fails (nonzero exit with no `result`).
+
+**Known limitation — no MCP for Gemini (V1).** The four `rocky.*` tools
+(reminders / notes / health-via-chat) are **Claude-only** for now. Gemini runs
+with no `--mcp-config`; wiring the Gemini CLI MCP path is the next step.
+
+**Untested against the live CLI.** The flags/schema above match the
+[sa7v1x3n fork](https://github.com/sa7v1x3n/agentrocky-windows) (empirical) and
+are covered by a synthetic-stream parser test, but no one has run this against
+an installed `gemini` yet. To verify: `npm i -g @google/gemini-cli`, run
+`gemini` once to authenticate, then pick **Backend ▸ Gemini** in the tray.
+
+## Path 1 — Gemini CLI (chosen)
+
+`@google/gemini-cli`.
 
 - Free tier: ~60 rpm / 1000 rpd via personal Google account.
-- Supports MCP, so `mcp_server.py` and the four `rocky.*` tools port over
-  unchanged.
+- Supports MCP (not yet wired here — see limitation above).
 - Closest swap to current architecture (CLI subprocess + stdio).
 
 ## Sketch
