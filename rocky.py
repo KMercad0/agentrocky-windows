@@ -40,7 +40,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout,
     QTextEdit, QLineEdit, QPlainTextEdit, QPushButton, QMessageBox,
-    QSystemTrayIcon, QMenu,
+    QSystemTrayIcon, QMenu, QDialog, QSlider, QDialogButtonBox,
 )
 
 
@@ -670,7 +670,8 @@ class ClaudeStrategy(_ProviderStrategy):
                         host.line_received.emit(text, "text")
                 elif btype == "tool_use":
                     name = block.get("name") or "tool"
-                    host.line_received.emit(f"→ {name}", "tool")
+                    # tool calls stay out of the chat (Rocky's bubble + voice
+                    # signal activity instead); still audited below.
                     host.tool_use_seen.emit(name)
                     audit("tool_use", {
                         "name": name,
@@ -883,7 +884,8 @@ class GeminiStrategy(_ProviderStrategy):
             elif t == "tool_use":
                 _flush()
                 name = msg.get("tool_name") or "tool"
-                host.line_received.emit(f"→ {name}", "tool")
+                # tool calls stay out of the chat (Rocky's bubble + voice
+                # signal activity instead); still audited below.
                 host.tool_use_seen.emit(name)
                 audit("tool_use", {"name": name, "input": msg.get("input")})
             elif t == "result":
@@ -970,6 +972,38 @@ def load_provider() -> str:
     detected = "claude" if _locate_claude_cli() else "none"
     save_provider(detected)
     return detected
+
+
+def save_walk_frac(frac: float) -> None:
+    """Persist Rocky's walk-height fraction (0.0 top → 1.0 bottom) to
+    settings.json, preserving the provider key (best-effort)."""
+    frac = max(0.0, min(1.0, float(frac)))
+    try:
+        SETTINGS_JSON.parent.mkdir(parents=True, exist_ok=True)
+        cfg: dict = {}
+        if SETTINGS_JSON.exists():
+            try:
+                loaded = json.loads(SETTINGS_JSON.read_text("utf-8"))
+                if isinstance(loaded, dict):
+                    cfg = loaded
+            except Exception:
+                pass
+        cfg["walk_frac"] = frac
+        SETTINGS_JSON.write_text(json.dumps(cfg, indent=2), "utf-8")
+    except Exception:
+        pass
+
+
+def load_walk_frac() -> float | None:
+    """Read persisted walk-height fraction (0.0 top → 1.0 taskbar edge). Returns
+    None if unset so the caller can fall back to the screen-dependent default."""
+    try:
+        cfg = json.loads(SETTINGS_JSON.read_text("utf-8"))
+        if isinstance(cfg, dict) and isinstance(cfg.get("walk_frac"), (int, float)):
+            return max(0.0, min(1.0, float(cfg["walk_frac"])))
+    except Exception:
+        pass
+    return None
 
 
 class AgentSession(QObject):
@@ -1553,8 +1587,11 @@ class Rocky(QWidget):
         self._qscreen = screen
         scr = screen.availableGeometry()
         self._screen = scr
+        saved_frac = load_walk_frac()  # 0.0 top → 1.0 taskbar edge; None if unset
         self.pos_x = float(scr.left() + scr.width() // 3)
-        self.pos_y = scr.bottom() - TASKBAR_OFFSET - SPRITE_SIZE
+        self._walk_frac = (saved_frac if saved_frac is not None
+                           else self._default_walk_frac(scr))
+        self.pos_y = self._walk_y(scr, self._walk_frac)
         # recompute on screen geometry change (DPI / resolution / dock changes)
         screen.geometryChanged.connect(self._on_screen_changed)
         screen.availableGeometryChanged.connect(self._on_screen_changed)
@@ -1987,13 +2024,69 @@ class Rocky(QWidget):
         self._unregister_session_notification()
         super().closeEvent(ev)
 
+    # -- walk height --
+    def _walk_y(self, scr, frac: float) -> float:
+        """Map a 0.0 (top) → 1.0 (bottom) fraction to a pixel Y on `scr`. The
+        lowest point (1.0) rests the sprite's feet on the top edge of the
+        taskbar; the default (see _default_walk_frac) sits TASKBAR_OFFSET px
+        above that — the original resting spot."""
+        y_top = scr.top()
+        y_bottom = scr.bottom() - SPRITE_SIZE   # feet on the taskbar's top edge
+        frac = max(0.0, min(1.0, frac))
+        return y_top + frac * (y_bottom - y_top)
+
+    def _default_walk_frac(self, scr) -> float:
+        """Fraction that lands on the original default spot — TASKBAR_OFFSET px
+        above the taskbar — so first-run placement is unchanged by the wider
+        range (the slider can now go lower, but the default does not move)."""
+        y_top = scr.top()
+        span = (scr.bottom() - SPRITE_SIZE) - y_top
+        default_y = scr.bottom() - TASKBAR_OFFSET - SPRITE_SIZE
+        return (default_y - y_top) / span if span > 0 else 1.0
+
+    def set_walk_frac(self, frac: float, persist: bool = True) -> None:
+        """Reposition Rocky's walk line. persist=False for live slider preview."""
+        self._walk_frac = max(0.0, min(1.0, float(frac)))
+        self.pos_y = self._walk_y(self._screen, self._walk_frac)
+        self.move(int(self.pos_x), int(self.pos_y))
+        if persist:
+            save_walk_frac(self._walk_frac)
+
+    def _show_walk_height_dialog(self) -> None:
+        """Tray → 'Set Walk Height…': a slider that moves Rocky's walk line live;
+        OK persists, Cancel restores the height we opened with."""
+        original = self._walk_frac
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Rocky — Walk Height")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Where should Rocky walk?"))
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Top"))
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(int(round(original * 100)))
+        row.addWidget(slider)
+        row.addWidget(QLabel("Bottom"))
+        lay.addLayout(row)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        lay.addWidget(buttons)
+        # live preview as the user drags (no save until OK)
+        slider.valueChanged.connect(lambda v: self.set_walk_frac(v / 100.0, persist=False))
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.set_walk_frac(slider.value() / 100.0, persist=True)
+        else:
+            self.set_walk_frac(original, persist=False)  # restore
+
     # -- multi-monitor / DPI changes --
     def _on_screen_changed(self, *_args) -> None:
         scr = self._qscreen.availableGeometry()
         self._screen = scr
         # clamp into the new geometry
         self.pos_x = max(scr.left(), min(self.pos_x, scr.right() - SPRITE_SIZE))
-        self.pos_y = scr.bottom() - TASKBAR_OFFSET - SPRITE_SIZE
+        self.pos_y = self._walk_y(scr, self._walk_frac)
         self.move(int(self.pos_x), int(self.pos_y))
         # reload sprites if DPR changed (different scaling factor on this monitor)
         new_dpr = self._qscreen.devicePixelRatio() if self._qscreen else 1.0
@@ -2061,23 +2154,24 @@ class Rocky(QWidget):
             QIcon(str(SPRITE_DIR / SPRITE_FILES["stand"])).pixmap(64, 64))
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(
-            "<b>agentrocky-windows</b><br>"
-            "An unofficial Windows port. Rocky walks your screen and chats "
-            "from a retro terminal.<br><br>"
-            "<b>Original concept, character &amp; art</b><br>"
-            "Rocky, the macOS/SwiftUI app, and all sprite art are the work of "
-            "<a href='https://github.com/itmesneha/agentrocky'>@itmesneha</a>. "
-            "All credit for the idea, art, and behaviors goes to her. Sprites "
-            "are not redistributed by this project.<br><br>"
-            "<b>Voice clips</b><br>"
-            "<a href='https://github.com/Akshat1903/rocky-peon-ping'>@Akshat1903</a> "
-            "— rocky-peon-ping, licensed CC-BY-NC-4.0 (non-commercial use only).<br><br>"
-            "<b>Windows port</b><br>"
-            "Karl Mercado "
-            "(<a href='https://github.com/KMercad0/agentrocky-windows'>KMercad0</a>) "
-            "— rebuilt on Windows in Python + PyQt6.<br><br>"
-            "If you like Rocky, star the "
-            "<a href='https://github.com/itmesneha/agentrocky'>original repo</a> first."
+            "<b>agentrocky-windows</b><br><br>"
+            "<b>Rocky:</b> Hello, friend! I am Rocky. I walk your screen, I help "
+            "you work, I nag you drink water. Good good good.<br><br>"
+            "<b>Grace:</b> He's a little desktop companion. The character, the "
+            "pixel art, the whole idea — all "
+            "<a href='https://github.com/itmesneha/agentrocky'>@itmesneha</a>'s. "
+            "She built the original on Mac. Rocky's hers.<br><br>"
+            "<b>Rocky:</b> Sneha make me! Star her repo first, yes? Respect.<br><br>"
+            "<b>Grace:</b> The voice clips are "
+            "<a href='https://github.com/Akshat1903/rocky-peon-ping'>@Akshat1903</a>'s "
+            "— non-commercial, CC-BY-NC-4.0.<br><br>"
+            "<b>Grace:</b> The Windows version's Karl's "
+            "(<a href='https://github.com/KMercad0/agentrocky-windows'>@KMercad0</a>) "
+            "— he rebuilt it over here and tinkered: an offline mode, a second "
+            "backend, voice, the wellness nags, a walk-height slider. The bones "
+            "are still Sneha's.<br><br>"
+            "<b>Rocky:</b> Friend Karl give me Windows house, few new tricks. "
+            "Sneha give me heart. Everybody — fist my bump!"
         )
         box.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -2534,6 +2628,7 @@ def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
     pause_action.setChecked(rocky._paused)
     pause_action.toggled.connect(rocky.set_paused)
     rocky._tray_pause_action = pause_action
+    menu.addAction("Set Walk Height…", rocky._show_walk_height_dialog)
     menu.addSeparator()
     menu.addAction("About Rocky", rocky._show_about)
     quit_action = menu.addAction("Quit")
