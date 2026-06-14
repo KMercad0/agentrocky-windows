@@ -203,6 +203,20 @@ notes / health-via-chat work on the free backend too.
 - **Gemini CLI stream-schema drift** — already flagged; pinning the bundled
   version reduces breakage. Gemini path is still untested against a live CLI (see
   `other_models_integration.md`).
+- **⚠️ Claude backend runs with auto-approved tools — unsafe default for non-tech
+  users.** Claude launches with `--dangerously-skip-permissions` AND the full default
+  toolset, so the workspace is NOT a sandbox — it can run shell commands and touch any
+  file the user's account can. Fine for the dev/power-user build (honestly disclosed in
+  the opt-in dialog), but a liability when shipped to non-technical users who can't weigh
+  that dialog. Fix for the installer build (verified `--allowedTools`/`--disallowedTools`/
+  `--tools` exist in the CLI): ship **two profiles** — installer build restricts Claude
+  to only the `rocky.*` MCP tools (no Bash/Write → kills the prompt-injection→RCE path);
+  dev build keeps the full toolset + opt-in. Not yet built. Free hardenings already
+  shipped (honest dialog copy + anti-injection persona rule, commit `1546350`).
+  **Gemini is already safe:** switched from `--approval-mode yolo` to `--approval-mode
+  plan` (read-only) — chat + file reads only, no commands/writes. Its opt-in dialog is
+  now an informational notice, not a risk warning. So this HIGH applies to **Claude
+  only**.
 
 ---
 
