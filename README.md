@@ -12,11 +12,12 @@
 >
 > **Rocky:** Grace make me sound like science project. I am friend. Fist my bump!
 
-> ⚠️ Community port. The original macOS/Swift app, the character "Rocky," and
-> **all sprite assets** are the work of **@itmesneha**. All credit for the
-> concept, art, and behaviors goes to her. This repo only re-implements the
-> runtime on Windows in Python + PyQt6, plus a few extras (voice, MCP
-> assistant tools).
+> ⚠️ Community project, not official — honestly more of a love letter than a
+> product. The character "Rocky," the pixel art, and the original macOS app are
+> all [**@itmesneha**](https://github.com/itmesneha)'s; that's the heart of it.
+> This is a Windows rebuild (Python + PyQt6) with a few extras bolted on along
+> the way — an offline mode, a couple of AI backends, voice, some wellness nags,
+> an adjustable walk height. Sprites aren't redistributed here.
 >
 > Original repo: <https://github.com/itmesneha/agentrocky>
 
@@ -29,14 +30,14 @@
 > - Click me — small green terminal pop up. We chat. I talk to Claude Code.
 > - Speech bubble when tool use, when task done. So you know what happen.
 > - Voice clips for events. Start, done, error. *Happy! Sad! Brain tired!*
-> - Four MCP tools so Claude help you: set reminder, take note, open file,
->   launch app.
+> - Five MCP tools so Claude help you: set reminder, take note, open file,
+>   launch app, tune health check-ins.
 > - Health check-ins! Every X minutes I ask: drink water, question?
 >   Stretch, question? Eye tired, question? *Caring friend!*
 >
 > **Grace:** Stream-json parsing for the chat output, color-coded by message
 > type. Speech bubbles fire on `tool_use` and turn-end events. The MCP
-> sidecar (`mcp_server.py`) exposes the four tools over stdio.
+> sidecar (`mcp_server.py`) exposes the five tools over stdio.
 
 ## Install — easy way (no Python)
 
@@ -78,9 +79,9 @@ icon ▸ **Backend**). Your choice is remembered in
 
 | Backend | Needs | What you get |
 |---|---|---|
-| **None** | nothing | Rocky just walks + health check-ins. Fully usable, zero setup. |
-| **Claude** | Node.js + `claude login` (Anthropic account) | Full agent: chat, file tools, reminders, app launching. |
-| **Gemini** | — | Stub for now ("coming soon"). Reserved for a future free-tier option. |
+| **None** | nothing | Rocky walks, does health check-ins, and holds a **scripted (no-AI) chat** — click a greeting, he replies in character and plays a voice clip. Fully usable, zero setup. |
+| **Claude** | Node.js + `claude login` (Anthropic account) | Full agent: chat, file tools, reminders, notes, app launching, health tuning. |
+| **Gemini (free)** | `@google/gemini-cli` + Google sign-in | **Chat + read-only** Rocky: talks in character and can read files to answer, but runs no commands and has no assistant tools (those are Claude-only). |
 
 First launch auto-picks **Claude** if the `claude` CLI is installed, otherwise
 **None**. Switch any time from the tray.
@@ -189,7 +190,7 @@ If you don't want autonomous tool execution, don't use this app.
 
 ## Personal assistant tools
 
-> **Rocky:** Claude can ask me for help. I do four things:
+> **Rocky:** Claude can ask me for help. I do five things:
 
 | Tool | What it does |
 |---|---|
@@ -197,6 +198,7 @@ If you don't want autonomous tool execution, don't use this app.
 | `rocky.note` | Append timestamped line to `~/agentrocky-workspace/notes.md` |
 | `rocky.open` | Open URL or file inside the workspace |
 | `rocky.launch_app` | Spawn whitelisted app: notepad, calc, explorer, cmd, paint, wordpad, word, excel, powerpoint, outlook, chrome, edge, firefox |
+| `rocky.health` | List or adjust the recurring health check-in categories (water / stretch / eyes / posture / mental) |
 
 > **Rocky:** Reminder live in `~/.agentrocky/reminders.json`. Miss by less
 > than one hour, I still fire next time you open me. Older — gone. *Sad sad
@@ -294,7 +296,7 @@ Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
   Daemon threads read stdout/stderr; cross-thread updates via `pyqtSignal`.
 - **`ReminderManager`** — `QFileSystemWatcher` on `reminders.json` → `QTimer`
   fires → native Win10/11 toast + voice clip.
-- **`mcp_server.py`** — exposes the four tools to Claude via `--mcp-config`.
+- **`mcp_server.py`** — exposes the five tools to Claude via `--mcp-config`.
 
 ```
 [Rocky GUI]  ── stdin →  [claude.exe]  ── HTTPS ──▶ Anthropic API
@@ -309,14 +311,22 @@ Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
 > **Rocky:** Sneha original is Mac. I am Windows version. Different bones,
 > same heart.
 
-- Windows-native: PyQt6 instead of SwiftUI; tray icon + right-click menu for
-  quit (no macOS app menu).
-- Single-instance lock via `QSharedMemory`.
-- Multi-monitor + High-DPI aware; hides on Win+L lock screen.
-- Workspace sandbox + audit log.
-- Voice pack on lifecycle events.
-- MCP assistant tools (reminder / note / open / launch_app).
-- Crash recovery via global excepthook → `~/.agentrocky/log.txt`.
+- Windows-native: PyQt6 instead of SwiftUI; tray icon + right-click menu (no
+  macOS app menu).
+- A few AI backends to pick from: Claude, Gemini (free, read-only chat), and an
+  offline None mode.
+- A scripted no-AI chat in None mode — click a greeting, Rocky replies in
+  character with voice, no backend needed.
+- Voice clips on start / done / error and on reminders.
+- Five little MCP assistant tools: reminder, note, open, launch_app, health.
+- Health check-ins — five wellness categories (water / stretch / eyes /
+  posture / mental), tray-configurable.
+- Adjustable walk height — tray → *Set Walk Height* (a slider from the top of
+  the screen down to the taskbar).
+- A bit of safety around the agent: per-backend opt-in warning, workspace
+  sandbox, audit log, Gemini kept read-only.
+- Single-instance lock, multi-monitor + High-DPI aware, hides on Win+L, crash
+  recovery.
 
 Behavior parity (walk speed, jazz timing, bubble messages, stream-json colors)
 follows the original spec.
@@ -334,7 +344,11 @@ follows the original spec.
   licensed CC-BY-NC-4.0. Voice references Rocky from Andy Weir's
   *Project Hail Mary*. **Non-commercial use only.** Toggle via tray menu or
   right-click rocky → **Voice**.
-- **Windows port:** this repo. Built with PyQt6.
+- **Windows version:** Karl Mercado
+  ([@KMercad0](https://github.com/KMercad0/agentrocky-windows)) — rebuilt Rocky
+  for Windows in Python + PyQt6 and tinkered along the way: a couple of backends,
+  voice, the wellness nags, an adjustable walk height. The character, the art,
+  and the whole idea are still [@itmesneha](https://github.com/itmesneha)'s.
 
 > **Rocky:** If you like project, star **original repo first**:
 > <https://github.com/itmesneha/agentrocky>. Sneha make me. I am her work.
