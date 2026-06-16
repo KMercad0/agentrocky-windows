@@ -80,11 +80,12 @@ icon ▸ **Backend**). Your choice is remembered in
 | Backend | Needs | What you get |
 |---|---|---|
 | **None** | nothing | Rocky walks, does health check-ins, and holds a **scripted (no-AI) chat** — click a greeting, he replies in character and plays a voice clip. Fully usable, zero setup. |
-| **Claude** | Node.js + `claude login` (Anthropic account) | Full agent: chat, file tools, reminders, notes, app launching, health tuning. |
+| **Claude** | Node.js + `claude login` (paid Anthropic account) | **Safe by default** — chat + Rocky's own tools (reminders, notes, open, launch, health). Opt into **full access** (a skip-permissions coding agent) from the tray when you want it. |
 | **Gemini (free)** | `@google/gemini-cli` + Google sign-in | **Chat + read-only** Rocky: talks in character and can read files to answer, but runs no commands and has no assistant tools (those are Claude-only). |
 
-First launch auto-picks **Claude** if the `claude` CLI is installed, otherwise
-**None**. Switch any time from the tray.
+First launch starts on **None** — Rocky walks and nags you about water, no AI
+and no cost until you choose a backend. Switch to Claude or Gemini any time from
+the tray.
 
 ## Run from source (developers)
 
@@ -170,23 +171,37 @@ Full step-by-step + troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md
 
 ## Safety
 
-> **Grace:** This is the part I want you to actually read. Rocky launches
-> `claude` with `--dangerously-skip-permissions`. Claude can run shell
-> commands, edit files, and call tools without per-action prompts.
+> **Grace:** This is the part I want you to actually read.
 >
 > **Rocky:** Big trust. Big responsibility. Like fistbump but with computer.
 
+Rocky ships **safe by default**. With the Claude backend, Claude starts in
+**safe mode**: it has *no* shell and *no* arbitrary file access — only Rocky's
+five MCP tools (set a reminder, take a note, open a workspace file, launch a
+whitelisted app, tune health check-ins), each workspace-bounded and audited. In
+safe mode Claude cannot run commands or read/change your files.
+
+**Full access** turns Claude into a real coding agent: it runs with
+`--dangerously-skip-permissions` and can execute arbitrary shell commands and
+read or write any file your Windows account can. It is **opt-in** — enable it
+from the tray menu (*Claude: Full access (skip permissions)*) and confirm the
+warning; Rocky then restarts Claude with full power. The working directory
+(`~/agentrocky-workspace/`, override `AGENTROCKY_CWD`) is only where Claude
+*starts* — it is **not** a sandbox.
+
 Mitigations in this port:
 
-- Claude's cwd is sandboxed to `~/agentrocky-workspace/` (override with
-  `AGENTROCKY_CWD`).
-- First send each session shows a confirmation dialog.
+- Safe mode is the default; full access takes a deliberate opt-in + warning.
+- The first message of each full-access session shows a confirmation dialog.
 - `~/.agentrocky/audit.log` records every `user_send` and `tool_use` (no
   assistant text, no results).
-- `rocky.open` only opens URLs or files inside the workspace.
-- `rocky.launch_app` is gated by a hardcoded executable whitelist.
+- `rocky.open` only opens URLs or files inside the workspace;
+  `rocky.launch_app` is gated by a hardcoded executable whitelist.
+- `--strict-mcp-config` keeps your other personal MCP servers (Gmail, Drive,
+  Calendar, …) out of Rocky's session entirely.
 
-If you don't want autonomous tool execution, don't use this app.
+If you don't want autonomous tool execution, just leave full access off (the
+default) — or use the Gemini / None backends.
 
 ## Personal assistant tools
 
@@ -323,8 +338,9 @@ Single file: `rocky.py`. Plus `mcp_server.py` (stdio MCP sidecar).
   posture / mental), tray-configurable.
 - Adjustable walk height — tray → *Set Walk Height* (a slider from the top of
   the screen down to the taskbar).
-- A bit of safety around the agent: per-backend opt-in warning, workspace
-  sandbox, audit log, Gemini kept read-only.
+- A bit of safety around the agent: Claude safe-by-default (tools stripped to
+  Rocky's own MCP set), opt-in full access behind a warning, audit log, strict
+  MCP isolation, Gemini kept read-only.
 - Single-instance lock, multi-monitor + High-DPI aware, hides on Win+L, crash
   recovery.
 

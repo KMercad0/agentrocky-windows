@@ -9,6 +9,30 @@
 
 block_cipher = None
 
+# --- app icon ---------------------------------------------------------------
+# Embed Rocky (sprites/stand.png) as the exe icon. sprites/ is gitignored, so the
+# .ico is a build-time derivative — generated here, never committed. Content is
+# cropped to Rocky, square-padded, and centered so he fills the icon. If the
+# sprite or Pillow is missing, the build still succeeds with the default icon.
+import os
+ICON = None
+_src = os.path.join('sprites', 'stand.png')
+if os.path.exists(_src):
+    try:
+        from PIL import Image
+        _img = Image.open(_src).convert('RGBA')
+        _bbox = _img.getbbox() or (0, 0, _img.width, _img.height)
+        _crop = _img.crop(_bbox)
+        _side = max(_crop.size)
+        _canvas = Image.new('RGBA', (_side, _side), (0, 0, 0, 0))
+        _canvas.paste(_crop, ((_side - _crop.width) // 2,
+                              (_side - _crop.height) // 2), _crop)
+        _canvas.save('app.ico', sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
+                                       (64, 64), (128, 128), (256, 256)])
+        ICON = 'app.ico'
+    except Exception as _e:
+        print(f"[rocky.spec] app icon skipped: {_e}")
+
 a = Analysis(
     ['rocky.py'],
     pathex=[],
@@ -47,6 +71,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON,
 )
 
 # onedir build — dist/rocky/rocky.exe + sibling _internal/. Cold start ~3-5x
