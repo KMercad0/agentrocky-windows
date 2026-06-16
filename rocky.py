@@ -7,6 +7,10 @@ Swift sources; not a line-by-line port. Sprites are reused from the original rep
 and must be placed in ./sprites/ next to this script.
 
 Run: pythonw rocky.py
+
+----
+Rocky: Hello friend! You read my code now? This whole file — it is ME.
+Grace: One file, by design. I'll narrate the tour; Rocky reacts. Walk down with us.
 """
 
 from __future__ import annotations
@@ -45,6 +49,8 @@ from PyQt6.QtWidgets import (
 
 
 # -- constants ----------------------------------------------------------------
+# Rocky: Numbers numbers! How fast I walk, how long I dance.
+# Grace: The tunables up top — speeds, frame rates, timings. They mirror the Swift original.
 
 def _bundle_dir() -> Path:
     """Bundled-resource root. PyInstaller exposes _MEIPASS; source uses script dir."""
@@ -329,6 +335,8 @@ def mono_font(size: int = 12) -> QFont:
 
 
 # -- voice pack ---------------------------------------------------------------
+# Rocky: My voice! I say YesYesYes when happy, SadSadSad when something break.
+# Grace: Lifecycle SFX with a priority scheduler + cooldown so clips don't stomp each other.
 
 # Higher number = more important. Higher pri preempts lower; same pri within
 # VOICE_MIN_GAP_MS of an in-flight clip is dropped (prevents stutter).
@@ -464,6 +472,8 @@ class VoicePack:
 
 
 # -- claude subprocess --------------------------------------------------------
+# Rocky: Here my brain plug in. Claude brain, Gemini brain, or no brain at all.
+# Grace: Pluggable backend strategies behind one signal contract — each owns its own process.
 
 def _locate_claude_cli() -> list[str] | None:
     for name in ("claude.cmd", "claude.exe", "claude"):
@@ -582,6 +592,8 @@ def rocky_system_prompt(full_access: bool) -> str:
 ROCKY_SYSTEM_PROMPT = rocky_system_prompt(True)
 
 
+# Rocky: Big brain Claude! One process, stay awake, I whisper to it each turn.
+# Grace: Persistent stream-json subprocess; safe-by-default tools, skip-perms only on opt-in.
 class ClaudeStrategy(_ProviderStrategy):
     """Claude Code CLI. Persistent subprocess in stream-json mode: one process
     stays alive, each turn is written to its stdin. MCP tools wired via
@@ -764,6 +776,8 @@ class ClaudeStrategy(_ProviderStrategy):
                 pass
 
 
+# Rocky: Free brain Gemini! It only read and talk — no touch, no change my files.
+# Grace: One-shot per turn (the CLI exits each time), read-only, a different stream schema.
 class GeminiStrategy(_ProviderStrategy):
     """Free Gemini CLI backend. Unlike Claude's persistent stdin stream, the
     Gemini CLI runs one-shot per turn (`-p PROMPT` then exits), so each send()
@@ -1129,6 +1143,8 @@ class AgentSession(QObject):
 
 
 # -- speech bubble ------------------------------------------------------------
+# Rocky: My talk cloud! It float over my head and follow when I walk now.
+# Grace: A click-through frameless window, re-anchored to Rocky on every move tick.
 
 BUBBLE_MAX_WIDTH = 280
 BUBBLE_DEBOUNCE_MS = 400
@@ -1221,6 +1237,8 @@ class SpeechBubble(QWidget):
 
 
 # -- chat window --------------------------------------------------------------
+# Rocky: Little green terminal. We sit, we talk, you and me, friend.
+# Grace: The dark popover — output, input, history, token counter, and the full-access gate.
 
 class ChatHeader(QWidget):
     """Draggable title bar for the chat window."""
@@ -1632,6 +1650,8 @@ class ChatWindow(QWidget):
 
 
 # -- rocky widget -------------------------------------------------------------
+# Rocky: This ME! The walking, the edge bounce, the jazz dance. Amaze amaze!
+# Grace: The sprite widget itself — move/walk/jazz timers, multi-monitor, hides on lock.
 
 class Rocky(QWidget):
     def __init__(self, session: AgentSession) -> None:
@@ -2363,6 +2383,8 @@ class Rocky(QWidget):
 
 
 # -- reminders ----------------------------------------------------------------
+# Rocky: I remember for you! Drink water in 30 minute, friend. Toast, voice, pop!
+# Grace: Two schedulers — one-shot reminders from MCP, plus recurring local health nudges.
 
 class ReminderManager(QObject):
     """Watches REMINDERS_JSON, schedules QTimer fires, shows toast + voice on fire.
@@ -2738,6 +2760,8 @@ def _attach_health_menu(tray: QSystemTrayIcon, health: HealthCheckManager) -> No
 
 
 # -- main ---------------------------------------------------------------------
+# Rocky: Wake me up! Lights on, Rocky walk!
+# Grace: Bootstrap — single-instance lock, crash hook, tray, hotkey, then the Qt event loop.
 
 def _build_tray(app: QApplication, rocky: "Rocky") -> QSystemTrayIcon | None:
     """Tray icon with right-click menu. Returns None if unsupported."""
