@@ -39,35 +39,37 @@
 > type. Speech bubbles fire on `tool_use` and turn-end events. The MCP
 > sidecar (`mcp_server.py`) exposes the five tools over stdio.
 
-## Install — easy way (no Python)
+## Install — easy way (one installer)
 
-> **Grace:** If you're not a developer, this is the path. Download a zip,
-> double-click one file, you're done.
+> **Grace:** If you're not a developer, this is the path. Download one file,
+> click through it, and Rocky's walking on your screen. No Python, no Node, no
+> copying files around.
 >
 > **Rocky:** I do hard work for you. You drink coffee. Good!
 
-1. Grab the latest zip from
-   [**Releases**](https://github.com/KMercad0/agentrocky-windows/releases).
-2. Unzip anywhere — Desktop is fine.
-3. Double-click **`setup.bat`** inside the unzipped folder.
+1. Grab **`RockySetup.exe`** from the
+   [**Releases**](https://github.com/KMercad0/agentrocky-windows/releases) page.
+2. Double-click it. Windows SmartScreen may warn (the installer is unsigned) —
+   click **More info → Run anyway**.
+3. Click through (installs to your user folder, no admin prompt). Done — Rocky
+   walks.
 
-`setup.bat` installs the Claude CLI, signs you in, walks you through dropping
-the 6 sprite PNGs in, then launches Rocky.
+Everything's bundled: the app, its runtime, and Rocky's sprites. On first run he
+walks, dances, and nags you about water with **no AI backend and no cost**. Want
+him to actually chat and do tasks? Add Claude or Gemini later — see
+[Backends](#backends). That part is optional.
 
-Full walk-through with screenshots-style detail and troubleshooting:
-[How-to-Run-rocky.md](./How-to-Run-rocky.md).
+Full walk-through + troubleshooting: [How-to-Run-rocky.md](./How-to-Run-rocky.md).
 
 ## Requirements
 
 > **Rocky:** What you need before I come live with you?
 
-- Windows 10 or 11
-- The 6 sprite PNGs from the original repo (not redistributed here — see
-  [Credits](#credits))
-- Python 3.10+ — only if running from source. Release zip has its own.
-- **Optional** — an AI backend if you want to chat with Rocky (see
-  [Backends](#backends)). Without one, Rocky still walks and nags you to drink
-  water. Anthropic account + Node.js are only needed for the Claude backend.
+- Windows 10 or 11 — that's the only hard requirement. Rocky walks out of the box.
+- **Optional, only if you want AI chat** (see [Backends](#backends)):
+  - **Claude** — a paid Anthropic account + the Claude CLI (Rocky guides you).
+  - **Gemini (free)** — Node.js + the Gemini CLI (Rocky guides you).
+- Python 3.10+ — only if running from source, not the installer.
 
 ## Backends
 
@@ -80,7 +82,7 @@ icon ▸ **Backend**). Your choice is remembered in
 | Backend | Needs | What you get |
 |---|---|---|
 | **None** | nothing | Rocky walks, does health check-ins, and holds a **scripted (no-AI) chat** — click a greeting, he replies in character and plays a voice clip. Fully usable, zero setup. |
-| **Claude** | Node.js + `claude login` (paid Anthropic account) | **Safe by default** — chat + Rocky's own tools (reminders, notes, open, launch, health). Opt into **full access** (a skip-permissions coding agent) from the tray when you want it. |
+| **Claude** | Claude CLI (`irm https://claude.ai/install.ps1 \| iex`, no Node) + `claude login` to a **paid** Anthropic account | **Safe by default** — chat + Rocky's own tools (reminders, notes, open, launch, health). Opt into **full access** (a skip-permissions coding agent) from the tray when you want it. |
 | **Gemini (free)** | `@google/gemini-cli` + Google sign-in | **Chat + read-only** Rocky: talks in character and can read files to answer, but runs no commands and has no assistant tools (those are Claude-only). |
 
 First launch starts on **None** — Rocky walks and nags you about water, no AI
@@ -99,8 +101,8 @@ cd agentrocky-windows
 
 pip install -r requirements.txt
 
-npm install -g @anthropic-ai/claude-code
-claude login
+# optional — only if you want the Claude backend (no Node needed):
+#   irm https://claude.ai/install.ps1 | iex   &&   claude login
 ```
 
 Then copy the 6 PNG sprites from
@@ -150,10 +152,11 @@ dist/
     _internal/...         ← Qt + Python runtime (~99 MB)
 ```
 
-To distribute: copy `dist/mcp_server.exe` next to `dist/rocky/rocky.exe`,
-copy `setup.bat` next to it too, drop the 6 sprite PNGs into
-`dist/rocky/sprites/` *(skip the sprites if shipping a release zip — users
-fetch them via setup.bat)*, then zip the `rocky/` folder.
+To build the one-click installer, run `installer\build_installer.bat` — it builds
+both exes, generates the icon, **bundles the sprites**, and emits
+`installer\Output\RockySetup.exe`. (Manual zip alternative: copy
+`dist/mcp_server.exe` next to `dist/rocky/rocky.exe`, drop the 6 sprite PNGs into
+`dist/rocky/sprites/`, then zip the `rocky/` folder.)
 
 `mcp_server.exe` must sit next to `rocky.exe`. The MCP config written at
 startup (`~/.agentrocky/mcp_config.json`) points `claude --mcp-config` at

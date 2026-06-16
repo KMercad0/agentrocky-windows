@@ -20,13 +20,11 @@ pyinstaller rocky.spec --noconfirm
 if errorlevel 1 goto fail
 
 echo.
-echo === [3/4] Staging mcp_server.exe + purging sprites (license) ===
+echo === [3/4] Staging mcp_server.exe sidecar ===
 copy /Y dist\mcp_server.exe dist\rocky\ >nul
 if errorlevel 1 goto fail
-REM Hard guarantee no upstream sprite art ends up in the installer. The .iss
-REM also Excludes sprites\, but deleting here is deterministic. Rocky
-REM re-downloads them on first run (Phase 2).
-if exist dist\rocky\sprites rmdir /S /Q dist\rocky\sprites
+REM Sprites are bundled by the .iss from the repo's sprites\ folder (next to
+REM rocky.exe at {app}\sprites), so Rocky walks on first run.
 
 echo.
 echo === [4/4] Compiling installer (Inno Setup) ===
@@ -38,6 +36,8 @@ if %errorlevel%==0 (
     "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" installer\rocky.iss
 ) else if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" (
     "%ProgramFiles%\Inno Setup 6\ISCC.exe" installer\rocky.iss
+) else if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" (
+    "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\rocky.iss
 ) else (
     echo [!] Inno Setup compiler ^(ISCC.exe^) not found.
     echo     Install it:  winget install JRSoftware.InnoSetup

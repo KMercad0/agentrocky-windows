@@ -11,8 +11,10 @@
 ;   3. copy dist\mcp_server.exe dist\rocky\        (sidecar must sit next to rocky.exe)
 ;   4. Install Inno Setup 6:  winget install JRSoftware.InnoSetup
 ;
-; Sprites are intentionally NOT bundled (upstream art, license — see
-; one_stop_install_plan.md). Rocky fetches them on first run (Phase 2).
+; Sprites ARE bundled next to rocky.exe (from the repo's local sprites\ — the
+; original art by @itmesneha; see Credits). They install to {app}\sprites where
+; external_path() finds them, so Rocky walks immediately on first run. sprites\
+; is gitignored, so whoever builds must have the 6 PNGs locally.
 
 #define AppName        "Rocky"
 #define AppVersion     "1.0.0"
@@ -40,7 +42,10 @@ SolidCompression=yes
 WizardStyle=modern
 ; Uninstaller uses the app exe's icon.
 UninstallDisplayIcon={app}\{#AppExeName}
-; SetupIconFile=rocky.ico   ; uncomment once an .ico is added to installer\
+; Installer's own icon = Rocky. app.ico is generated at repo root by rocky.spec
+; during the PyInstaller step (which build_installer.bat runs before ISCC), so it
+; exists by compile time. Build via build_installer.bat, not bare ISCC.
+SetupIconFile=..\app.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -50,9 +55,12 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Name: "startupicon"; Description: "Start Rocky automatically when I log in"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
-; The whole onedir payload (rocky.exe + _internal\ + mcp_server.exe + setup.bat),
-; recursively, EXCEPT the dev's local sprites\ folder (not redistributable).
-Source: "..\dist\rocky\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "sprites\*,setup.bat"
+; The whole onedir payload (rocky.exe + _internal\ + mcp_server.exe), recursively.
+; setup.bat is a from-source helper, not needed in the frozen install.
+Source: "..\dist\rocky\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "setup.bat"
+; Rocky's sprites, bundled next to rocky.exe so external_path() ({app}\sprites)
+; finds them — Rocky walks on first run with no download or manual copy.
+Source: "..\sprites\*"; DestDir: "{app}\sprites"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}";              Filename: "{app}\{#AppExeName}"
@@ -62,12 +70,13 @@ Name: "{autodesktop}\{#AppName}";        Filename: "{app}\{#AppExeName}"; Tasks:
 Name: "{userstartup}\{#AppName}";        Filename: "{app}\{#AppExeName}"; Tasks: startupicon
 
 [Run]
-; Offer to launch Rocky at the end of setup. First launch triggers the
-; sprite download (Phase 2) and backend wizard (Phase 3).
+; Offer to launch Rocky at the end of setup. He walks immediately on the None
+; backend (no AI, no cost); Claude / Gemini are optional, set up later from the
+; tray menu.
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Remove sprites that Rocky downloaded into the install dir at runtime, so an
-; uninstall leaves nothing behind. (User data under %USERPROFILE%\.agentrocky\
-; and the workspace are left intact on purpose — documented in How-to-Run.)
+; Remove the bundled sprites on uninstall so nothing's left behind. (User data
+; under %USERPROFILE%\.agentrocky\ and the workspace are left intact on purpose
+; — documented in How-to-Run.)
 Type: filesandordirs; Name: "{app}\sprites"

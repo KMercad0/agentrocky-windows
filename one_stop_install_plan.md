@@ -5,7 +5,47 @@ first-run screen with three buttons — **Claude / Gemini (free) / None** — an
 up with a working Rocky. No manual Python. No manual Node. No manual npm. No
 manual sprite copy.
 
-Status (2026-05-30): decisions locked. **Phase 1 done + compiles** —
+---
+
+## ⏩ STATUS UPDATE (2026-06-16) — what actually shipped (supersedes the phased plan below)
+
+Karl revised several locked decisions. The installer now produces a **working,
+walk-out-of-the-box Rocky from one `RockySetup.exe`**. Current reality:
+
+- **Phase 1 (one Setup.exe): DONE + rebuilt.** `installer\Output\RockySetup.exe`
+  (~53 MB) rebuilt 2026-06-16 with the current code. Installs per-user (no UAC),
+  Start Menu + optional desktop/startup shortcuts.
+- **Sprites: BUNDLED, not auto-downloaded.** Karl chose to bundle the 6 PNGs into
+  the installer (accepting the redistribution/takedown risk himself). `rocky.iss`
+  ships `..\sprites\*` → `{app}\sprites`; **Phase 2 (auto-download) is dropped.**
+- **App + installer icon: DONE.** `rocky.spec` generates `app.ico` from
+  `sprites\stand.png` at build time (cropped/squared); `rocky.exe`, the installer,
+  and shortcuts all show Rocky. `app.ico` is gitignored (sprite derivative).
+- **The Claude security HIGH: FIXED.** Claude is now **safe-by-default**
+  (`--tools "" --allowedTools "mcp__agentrocky__*"` — MCP tools only, no shell/file
+  access) with `--dangerously-skip-permissions` as a tray opt-in behind a warning,
+  plus `--strict-mcp-config` to block the user's other MCP servers leaking in.
+  This replaces the "two build profiles" idea — it's one build, runtime toggle.
+- **Phase 3 (first-run backend wizard): DROPPED.** Decision: the single-`.exe`
+  priority is *Rocky runs immediately*. Default backend is **None** (walks, no AI,
+  no cost). Claude/Gemini are **optional, manual, and guided** (tray Backend menu +
+  docs), not wired into the installer. More clicks for AI is acceptable.
+- **Phase 4 (bundle portable Node for Gemini): DROPPED.** Gemini stays manual like
+  Claude — the user installs Node + `@google/gemini-cli` themselves; we just
+  document it (README Backends, How-to-Run "Adding an AI backend").
+- **Phase 5 (Gemini MCP): still deferred** (unchanged).
+
+**Remaining before a public release:** (1) actually test-install `RockySetup.exe`
+on a clean machine/VM (only ever compiled + locally built, never clean-installed);
+(2) code signing still absent → SmartScreen "More info → Run anyway" documented;
+(3) sprite license remains the legal risk Karl has accepted.
+
+The phased plan below is kept for history; where it conflicts with this section,
+this section wins.
+
+---
+
+Status (2026-05-30, historical): decisions locked. **Phase 1 done + compiles** —
 `installer\Output\RockySetup.exe` (49.3 MB) built via ISCC 6.7.3. Phases 2–5
 pending. Phase 1 alone does **not** yield a working app (needs Phase 2 sprites —
 see ordering warning below).
